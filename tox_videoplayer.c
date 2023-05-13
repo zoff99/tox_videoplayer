@@ -159,9 +159,7 @@ static int64_t pts_to_ms(int64_t pts, AVRational time_base)
 
 
 
-
-
-
+// ############## FIFO ##############
 
 typedef struct {
     void* data;
@@ -231,12 +229,7 @@ size_t fifo_buffer_read(fifo_buffer_t* buffer, void* data, size_t size) {
 }
 
 
-
-
-
-
-
-
+// ############## FIFO ##############
 
 
 static void tox_log_cb__custom(Tox *tox, TOX_LOG_LEVEL level, const char *file, uint32_t line, const char *func,
@@ -554,7 +547,6 @@ char font8x8_basic[128][8] =
     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}    // U+007F
 };
 
-
 // "0" -> [48]
 // "9" -> [57]
 // ":" -> [58]
@@ -771,7 +763,6 @@ static void show_novideo_text(int age_ms)
     }
     free(yuv_image);
 }
-
 
 static void flush_video(int age_ms)
 {
