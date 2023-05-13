@@ -916,6 +916,7 @@ static void *ffmpeg_thread_video_func(void *data)
     uint8_t **converted_samples = NULL;
     int ret;
     int desktop_mode = 0;
+    int http_mode = 0;
 
     char *inputfile = (char *) data;
 
@@ -982,12 +983,23 @@ static void *ffmpeg_thread_video_func(void *data)
     }
     else
     {
+        if (strncmp((char *)inputfile, "http://", strlen((char *)"http://")) == 0)
+        {
+            http_mode = 1;
+        }
+        else if (strncmp((char *)inputfile, "https://", strlen((char *)"https://")) == 0)
+        {
+            http_mode = 1;
+        }
+
         // Open the input file
         if ((ret = avformat_open_input(&format_ctx, inputfile, NULL, NULL)) < 0) {
             fprintf(stderr, "Could not open input file '%s'\n", inputfile);
             return NULL; // ret;
         }
     }
+
+    fprintf(stderr, "http_mode=%d\n", http_mode);
 
     // Retrieve stream information
     if ((ret = avformat_find_stream_info(format_ctx, NULL)) < 0) {
@@ -1147,12 +1159,16 @@ static void *ffmpeg_thread_video_func(void *data)
                     int64_t pts = frame->pts;
                     int64_t ms = pts_to_ms(pts, time_base_video) - video_start_time; // convert PTS to milliseconds
                     //**// printf("PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_video.num, time_base_video.den, ms);
-                    // printf("TS: frame %ld %ld\n", ms, global_pts);
+                    // printf("TS: frame %ld %ld\n", global_pts, ms);
 
                     if ((desktop_mode == 1) || (ms > (int64_t)1000*(int64_t)1000*(int64_t)1000*(int64_t)1000))
                     {
                         ms = global_pts;
                         // printf("timestamps broken, just play\n");
+                    }
+                    else if (http_mode == 1)
+                    {
+                        ms = global_pts;
                     }
 
                     if (global_need_video_seek != 0)
@@ -1663,6 +1679,13 @@ static void *thread_key_func(void *data)
             if (global_play_status == PLAY_PAUSED)
             {
                 global_play_status = PLAY_PLAYING;
+                flush_video(0);
+                flush_video(0);
+                flush_video(0);
+                flush_video(0);
+                flush_video(0);
+                flush_video(0);
+                flush_video(0);
                 printf("KK:----- PLAY  -----\n");
             }
             else if (global_play_status == PLAY_PLAYING)
