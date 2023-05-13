@@ -110,6 +110,7 @@ AVRational time_base_audio = (AVRational) {0, 0};
 AVRational time_base_video = (AVRational) {0, 0};
 int64_t audio_start_time = 0;
 int global_audio_delay_factor = 0;
+int global_video_delay_factor = 0;
 pthread_mutex_t time___mutex;
 #define PLAY_PAUSED 0
 #define PLAY_PLAYING 1
@@ -1164,7 +1165,7 @@ static void *ffmpeg_thread_video_func(void *data)
                     }
                     else
                     {
-                        bool cond = (global_play_status == PLAY_PLAYING) && ((ms + 500) < global_pts);
+                        bool cond = (global_play_status == PLAY_PLAYING) && ((ms + 600) < global_pts);
                         if (cond)
                         {
                             // skip frames, we are seeking forward most likely
@@ -1178,7 +1179,16 @@ static void *ffmpeg_thread_video_func(void *data)
                             int counter = 0;
                             const int sleep_ms = 4;
                             const int one_sec_ms = 1000;
-                            while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
+
+                            int delay_add = 0;
+                            if (desktop_mode == 0)
+                            {
+                                // video delay only works on real files
+                                delay_add = global_video_delay_factor * 50;
+                            }
+
+
+                            while ((global_play_status == PLAY_PAUSED) || ((ms + delay_add) > global_pts))
                             {
                                 usleep(1000 * sleep_ms);
                                 counter++;
@@ -1208,36 +1218,7 @@ static void *ffmpeg_thread_video_func(void *data)
                                 }
                                 else
                                 {
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
-                                    flush_video(-800);
+                                    // global_play_status == PLAY_PAUSED
                                 }
                             }
                             av_frame_unref(frame);
@@ -1650,6 +1631,10 @@ static void *thread_key_func(void *data)
             {
                 break;
             }
+            else if (ch == 'v')
+            {
+                break;
+            }
             else if (ch == 'g')
             {
                 break;
@@ -1705,7 +1690,19 @@ static void *thread_key_func(void *data)
             {
                 global_audio_delay_factor = 0;
             }
-            printf("KK:-----AUDIO DELAY: %d\n", (60 * global_audio_delay_factor));
+            printf("KK:-----AUDIO DELAY: %d ms\n", (60 * global_audio_delay_factor));
+        }
+        else if (ch == 'v')
+        {
+            if (global_video_delay_factor <= 10)
+            {
+                global_video_delay_factor++;
+            }
+            else
+            {
+                global_video_delay_factor = 0;
+            }
+            printf("KK:-----VIDEO DELAY: %d ms\n", (50 * global_video_delay_factor));
         }
         else if (ch == 'g')
         {
