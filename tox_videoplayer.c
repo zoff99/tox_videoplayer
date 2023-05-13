@@ -856,6 +856,18 @@ static void print_codec_parameters_video(AVCodecParameters *codecpar, const char
     avcodec_free_context(&codec);
 }
 
+static void calculateBoundingBox_to_fullhd(int in_width, int in_height, int *out_width, int *out_height)
+{
+    const double aspectRatio = (double)in_width / (double)in_height;
+    if (aspectRatio > (16.0 / 9.0)) {
+        *out_width = 1920;
+        *out_height = (int)(1920 / aspectRatio);
+    } else {
+        *out_height = 1080;
+        *out_width = (int)(1080 * aspectRatio);
+    }
+}
+
 static void *ffmpeg_thread_video_func(void *data)
 {
     AVFormatContext *format_ctx = NULL;
@@ -899,8 +911,6 @@ static void *ffmpeg_thread_video_func(void *data)
         //av_dict_set(&options,"follow_mouse","centered",0);
         //Video frame size. The default is to capture the full screen
         av_dict_set(&options,"video_size","3840x2160",0);
-        output_width = 1920;
-        output_height = 1080;
         AVInputFormat *ifmt = av_find_input_format("x11grab");
         //Grab at position 10,20 ":0.0+10,20"
         if (avformat_open_input(&format_ctx, ":0.0+0,0", ifmt, &options) != 0)
@@ -974,8 +984,10 @@ static void *ffmpeg_thread_video_func(void *data)
 
     if ((video_codec_ctx->width > 1920) || (video_codec_ctx->height > 1080))
     {
-        output_width = 1920;
-        output_height = 1080;
+        calculateBoundingBox_to_fullhd(video_codec_ctx->width,
+                        video_codec_ctx->height,
+                        &output_width,
+                        &output_height);
     }
     else
     {
