@@ -1062,7 +1062,7 @@ static void *ffmpeg_thread_video_func(void *data)
                     planes_stride[2] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 2);
                     // fprintf(stderr, "VideoFrame:strides:%d %d %d\n",planes_stride[0],planes_stride[1],planes_stride[2]);
 
-                    sws_scale(scaler_ctx, (const uint8_t * const*)frame->data, frame->linesize, 0, output_height,
+                    sws_scale(scaler_ctx, (const uint8_t * const*)frame->data, frame->linesize, 0, video_codec_ctx->height,
                             dst_yuv_buffer, planes_stride);
 
                     int64_t pts = frame->pts;
@@ -1097,8 +1097,7 @@ static void *ffmpeg_thread_video_func(void *data)
                         {
                             if (global_play_status == PLAY_PLAYING)
                             {
-                                fprintf(stderr, "frame h:%d %d\n", frame->height, output_height);
-                                
+                                // fprintf(stderr, "frame h:%d %d\n", frame->height, output_height);
                                 uint32_t frame_age_ms = 0;
                                 TOXAV_ERR_SEND_FRAME error2;
                                 bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
