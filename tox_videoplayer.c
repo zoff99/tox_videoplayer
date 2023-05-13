@@ -887,7 +887,7 @@ static void *ffmpeg_thread_video_func(void *data)
 
     if (strncmp((char *)inputfile, "desktop", strlen((char *)"desktop")) == 0)
     {
-        // captur desktop on X11 Linux
+        // capture desktop on X11 Linux
         Display *display = XOpenDisplay(NULL);
         if (display == NULL)
         {
@@ -903,19 +903,38 @@ static void *ffmpeg_thread_video_func(void *data)
 
         fprintf(stderr, "Display Screen: %dx%d\n", screen_width, screen_height);
 
+        if ((screen_width < 16) || (screen_width > 10000))
+        {
+            screen_width = 640;
+        }
+
+        if ((screen_height < 16) || (screen_height > 10000))
+        {
+            screen_height = 480;
+        }
+
+        fprintf(stderr, "Display Screen corrected: %dx%d\n", screen_width, screen_height);
+
         AVDictionary* options = NULL;
-        //Set some options
-        //grabbing frame rate
+        // Set some options
+        // grabbing frame rate
         av_dict_set(&options, "framerate", "30", 0);
-        //Make the grabbed area follow the mouse
-        //av_dict_set(&options,"follow_mouse","centered",0);
-        //Video frame size. The default is to capture the full screen
-        av_dict_set(&options,"video_size","3840x2160",0);
+        // Make the grabbed area follow the mouse
+        // av_dict_set(&options,"follow_mouse","centered",0);
+
+        const int resolution_string_len = 1000;
+        char resolution_string[resolution_string_len];
+        memset(resolution_string, 0, resolution_string_len);
+        snprintf(resolution_string, resolution_string_len, "%dx%d", screen_width, screen_height);
+        fprintf(stderr, "Display resolution_string: %s\n", resolution_string);
+
+        av_dict_set(&options, "video_size", resolution_string, 0);
         AVInputFormat *ifmt = av_find_input_format("x11grab");
-        //Grab at position 10,20 ":0.0+10,20"
+
+        // Grab at position 10,20 ":0.0+10,20"
         if (avformat_open_input(&format_ctx, ":0.0+0,0", ifmt, &options) != 0)
         {
-            fprintf(stderr, "Could not desktop as input stream.\n");
+            fprintf(stderr, "Could not open desktop as video input stream.\n");
             return NULL;
         }
     }
@@ -1202,10 +1221,25 @@ static void *ffmpeg_thread_audio_func(void *data)
 
     char *inputfile = (char *)data;
 
-    // Open the input file
-    if ((ret = avformat_open_input(&format_ctx, inputfile, NULL, NULL)) < 0) {
-        fprintf(stderr, "AA:Could not open input file '%s'\n", inputfile);
-        return NULL; // ret;
+    if (strncmp((char *)inputfile, "desktop", strlen((char *)"desktop")) == 0)
+    {
+        AVDictionary* options = NULL;
+        // av_dict_set(&options, "framerate", "30", 0);
+        AVInputFormat *ifmt = av_find_input_format("pulse");
+
+        if (avformat_open_input(&format_ctx, "alsa_output.pci-0000_0a_00.3.iec958-stereo.monitor", ifmt, &options) != 0)
+        {
+            fprintf(stderr, "AA:Could not open pluse audio device as audio input stream.\n");
+            return NULL;
+        }
+    }
+    else
+    {
+        // Open the input file
+        if ((ret = avformat_open_input(&format_ctx, inputfile, NULL, NULL)) < 0) {
+            fprintf(stderr, "AA:Could not open input file '%s'\n", inputfile);
+            return NULL; // ret;
+        }
     }
 
     // Retrieve stream information
@@ -1264,19 +1298,36 @@ static void *ffmpeg_thread_audio_func(void *data)
         return NULL; // AVERROR(ENOMEM);
     }
 
+    //if (audio_codec_ctx->channel_layout == 0)
+    {
+        // HINT: no idea what to do here. just guess STEREO?
+        audio_codec_ctx->channel_layout = AV_CH_LAYOUT_STEREO;
+    }
+
     swr_ctx = swr_alloc_set_opts(NULL,
                                  out_channel_layout, AV_SAMPLE_FMT_S16, out_sample_rate,
                                  audio_codec_ctx->channel_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate,
                                  0, NULL);
     if (!swr_ctx) {
         fprintf(stderr, "AA:Could not allocate resampler context\n");
+        fprintf(stderr, "AA:%d %d %d %ld %d %d\n", out_channel_layout,
+                AV_SAMPLE_FMT_S16, out_sample_rate, audio_codec_ctx->channel_layout,
+                audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate);
         return NULL; // 1;
     }
 
     if (swr_init(swr_ctx) < 0) {
         fprintf(stderr, "AA:Could not initialize resampler context\n");
+        fprintf(stderr, "AA:%d %d %d %ld %d %d\n", out_channel_layout,
+                AV_SAMPLE_FMT_S16, out_sample_rate, audio_codec_ctx->channel_layout,
+                audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate);
         return NULL; // 1;
     }
+
+    fprintf(stderr, "AA:Audio Config:%d %d %d %ld %d %d\n", out_channel_layout,
+            AV_SAMPLE_FMT_S16, out_sample_rate, audio_codec_ctx->channel_layout,
+            audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate);
+
 
     // Wait for friend to come online
     while (friend_online == 0)
