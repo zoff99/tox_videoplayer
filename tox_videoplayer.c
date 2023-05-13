@@ -108,6 +108,8 @@ int need_free_global_pulse_inputdevice_name = 0;
 int need_free_global_desktop_capture_fps = 0;
 AVRational time_base_audio = (AVRational) {0, 0};
 AVRational time_base_video = (AVRational) {0, 0};
+int64_t audio_start_time = 0;
+int global_audio_delay_factor = 0;
 pthread_mutex_t time___mutex;
 #define PLAY_PAUSED 0
 #define PLAY_PLAYING 1
@@ -838,11 +840,23 @@ static int seek_stream(AVFormatContext *format_ctx_seek, AVCodecContext *codec_c
 }
 
 static void print_codec_parameters_audio(AVCodecParameters *codecpar, const char* text_prefix) {
+    printf("%s===================================\n", text_prefix);
     printf("%sCodec Type: %s\n", text_prefix, avcodec_get_name(codecpar->codec_id));
-    printf("%sSample Format: %s\n", text_prefix, av_get_sample_fmt_name(codecpar->format));
+    printf("%sCodec ID: %d\n", text_prefix, codecpar->codec_id);
+    if (av_get_sample_fmt_name(codecpar->format) != NULL)
+    {
+        printf("%sSample Format: %s\n", text_prefix, av_get_sample_fmt_name(codecpar->format));
+    }
     printf("%sSample Rate: %d\n", text_prefix, codecpar->sample_rate);
     printf("%sChannels: %d\n", text_prefix, codecpar->channels);
-    printf("%sBitrate: %ld\n", text_prefix, codecpar->bit_rate);
+    printf("%sChannel Layout: %ld\n", text_prefix, codecpar->channel_layout);
+    printf("%sBit Rate: %ld\n", text_prefix, codecpar->bit_rate);
+    printf("%sBlock Align: %d\n", text_prefix, codecpar->block_align);
+    printf("%sFrame Size: %d\n", text_prefix, codecpar->frame_size);
+    printf("%sInitial Padding: %d\n", text_prefix, codecpar->initial_padding);
+    printf("%sTrailing Padding: %d\n", text_prefix, codecpar->trailing_padding);
+    printf("%sSeek Preroll: %d\n", text_prefix, codecpar->seek_preroll);
+    printf("%s===================================\n", text_prefix);
 }
 
 static void print_codec_parameters_video(AVCodecParameters *codecpar, const char* text_prefix) {
@@ -851,6 +865,7 @@ static void print_codec_parameters_video(AVCodecParameters *codecpar, const char
     {
         return;
     }
+    printf("%s===================================\n", text_prefix);
     int res = avcodec_parameters_to_context(codec, codecpar);
     if (res >= 0)
     {
@@ -868,6 +883,7 @@ static void print_codec_parameters_video(AVCodecParameters *codecpar, const char
             printf("%sCodec Format: %s\n", text_prefix, av_get_pix_fmt_name(codec->pix_fmt));
         }
     }
+    printf("%s===================================\n", text_prefix);
     avcodec_free_context(&codec);
 }
 
@@ -892,11 +908,13 @@ static void *ffmpeg_thread_video_func(void *data)
     AVPacket packet;
     AVFrame *frame = NULL;
     int video_stream_index = -1;
+    int64_t video_start_time = 0;
     int num_samples;
     int output_width = 0;
     int output_height = 0;
     uint8_t **converted_samples = NULL;
     int ret;
+    int desktop_mode = 0;
 
     char *inputfile = (char *) data;
 
@@ -909,6 +927,7 @@ static void *ffmpeg_thread_video_func(void *data)
             fprintf(stderr, "Could not find X11 Display.\n");
             return NULL;
         }
+        desktop_mode = 1;
         Window root = DefaultRootWindow(display);
         XWindowAttributes attributes;
         XGetWindowAttributes(display, root, &attributes);
@@ -941,15 +960,16 @@ static void *ffmpeg_thread_video_func(void *data)
         // grabbing frame rate
         av_dict_set(&options, "framerate", capture_fps, 0);
         // make the grabbed area follow the mouse
-        // av_dict_set(&options,"follow_mouse","centered",0);
+        // av_dict_set(&options, "follow_mouse", "centered", 0);
 
         const int resolution_string_len = 1000;
         char resolution_string[resolution_string_len];
         memset(resolution_string, 0, resolution_string_len);
         snprintf(resolution_string, resolution_string_len, "%dx%d", screen_width, screen_height);
         fprintf(stderr, "Display resolution_string: %s\n", resolution_string);
-
         av_dict_set(&options, "video_size", resolution_string, 0);
+        av_dict_set(&options, "probesize", "200M", 0);
+
         AVInputFormat *ifmt = av_find_input_format("x11grab");
 
         // example: grab at position 10,20 ":0.0+10,20"
@@ -1051,7 +1071,7 @@ static void *ffmpeg_thread_video_func(void *data)
     // Create a scaler context to convert the video to YUV
     struct SwsContext *scaler_ctx = sws_getContext(video_codec_ctx->width, video_codec_ctx->height,
             video_codec_ctx->pix_fmt, output_width, output_height,
-            AV_PIX_FMT_YUV420P, SWS_BILINEAR, NULL, NULL, NULL);
+            AV_PIX_FMT_YUV420P, SWS_POINT, NULL, NULL, NULL);
 
     if (scaler_ctx == NULL) {
         fprintf(stderr, "Error: could not create scaler context\n");
@@ -1078,6 +1098,12 @@ static void *ffmpeg_thread_video_func(void *data)
         fprintf(stderr, "start playing ...\n");
     }
     pthread_mutex_unlock(&time___mutex);
+
+    if (format_ctx->streams[video_stream_index]->start_time > 0)
+    {
+        video_start_time = pts_to_ms(format_ctx->streams[video_stream_index]->start_time, time_base_video);
+    }
+    fprintf(stderr, "stream start time: %ld\n", video_start_time);
 
     while (ffmpeg_thread_video_stop != 1)
     {
@@ -1118,17 +1144,15 @@ static void *ffmpeg_thread_video_func(void *data)
                             dst_yuv_buffer, planes_stride);
 
                     int64_t pts = frame->pts;
-                    int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
-                    // printf("PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
-                    // fprintf(stderr, "TS: frame %ld %ld\n", ms, global_pts);
+                    int64_t ms = pts_to_ms(pts, time_base_video) - video_start_time; // convert PTS to milliseconds
+                    //**// printf("PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_video.num, time_base_video.den, ms);
+                    // printf("TS: frame %ld %ld\n", ms, global_pts);
 
-                    // HINT: check this again when no PTS is available!! -----------------
-                    //if (labs(ms - global_pts) > 4000)
-                    //{
-                    //    ms = global_pts;
-                    //    // printf("AA:timestamps broken, just play\n");
-                    //}
-                    // HINT: check this again when no PTS is available!! -----------------
+                    if ((desktop_mode == 1) || (ms > (int64_t)1000*(int64_t)1000*(int64_t)1000*(int64_t)1000))
+                    {
+                        ms = global_pts;
+                        // printf("timestamps broken, just play\n");
+                    }
 
                     if (global_need_video_seek != 0)
                     {
@@ -1151,9 +1175,18 @@ static void *ffmpeg_thread_video_func(void *data)
                         }
                         else
                         {
+                            int counter = 0;
+                            const int sleep_ms = 4;
+                            const int one_sec_ms = 1000;
                             while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
                             {
-                                usleep(1000 * 4);
+                                usleep(1000 * sleep_ms);
+                                counter++;
+                                if (counter > (one_sec_ms / sleep_ms))
+                                {
+                                    // sleep for max. 1 second
+                                    break;
+                                }
                             }
 
                             if (toxav != NULL)
@@ -1244,18 +1277,21 @@ static void *ffmpeg_thread_audio_func(void *data)
     int num_samples;
     uint8_t **converted_samples = NULL;
     int ret;
+    int desktop_mode = 0;
     const int out_channels = 2; // keep in sync with `out_channel_layout`
     const int out_channel_layout = AV_CH_LAYOUT_STEREO; // AV_CH_LAYOUT_MONO or AV_CH_LAYOUT_STEREO;
     const int out_bytes_per_sample = 2; // 2 byte per PCM16 sample
     const int out_samples = 60 * 48; // X ms @ 48000Hz
     const int out_sample_rate = 48000; // fixed at 48000Hz
-    const int temp_audio_buf_sizes = 50000; // fixed buffer
+    const int temp_audio_buf_sizes = 600000; // fixed buffer
+    int audio_delay_in_bytes = 0;
     fifo_buffer_t* audio_pcm_buffer = fifo_buffer_create(temp_audio_buf_sizes);
 
     char *inputfile = (char *)data;
 
     if (strncmp((char *)inputfile, "desktop", strlen((char *)"desktop")) == 0)
     {
+        desktop_mode = 1;
         AVDictionary* options = NULL;
         // av_dict_set(&options, "framerate", "30", 0);
         AVInputFormat *ifmt = av_find_input_format("pulse");
@@ -1397,6 +1433,12 @@ static void *ffmpeg_thread_audio_func(void *data)
 
     uint8_t *buf = (uint8_t *)calloc(1, temp_audio_buf_sizes);
 
+    if (format_ctx->streams[audio_stream_index]->start_time > 0)
+    {
+        audio_start_time = pts_to_ms(format_ctx->streams[audio_stream_index]->start_time, time_base_audio);
+    }
+    fprintf(stderr, "AA:stream start time: %ld\n", audio_start_time);
+
     while (ffmpeg_thread_audio_stop != 1)
     {
         // Read packets from the input file and decode them        
@@ -1440,16 +1482,14 @@ static void *ffmpeg_thread_audio_func(void *data)
 
                     // Do something with the converted samples here
                     int64_t pts = frame->pts;
-                    int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
-                    // printf("AA:PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_video.num, time_base_video.den, ms);
+                    int64_t ms = pts_to_ms(pts, time_base_audio) - audio_start_time; // convert PTS to milliseconds
+                    //**// printf("AA:PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_audio.num, time_base_audio.den, ms);
 
-                    /*
-                    if (labs(ms - global_pts) > 4000)
+                    if ((desktop_mode == 1) || (ms > (int64_t)1000*(int64_t)1000*(int64_t)1000*(int64_t)1000))
                     {
                         ms = global_pts;
                         // printf("AA:timestamps broken, just play\n");
                     }
-                    */
 
                     if (global_need_audio_seek != 0)
                     {
@@ -1471,18 +1511,28 @@ static void *ffmpeg_thread_audio_func(void *data)
                         }
                         else
                         {
+                            int counter = 0;
+                            const int sleep_ms = 4;
+                            const int one_sec_ms = 1000;
                             while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
                             {
-                                usleep(1000 * 4);
+                                usleep(1000 * sleep_ms);
+                                counter++;
+                                if (counter > (one_sec_ms / sleep_ms))
+                                {
+                                    // sleep for max. 1 second
+                                    break;
+                                }
                             }
 
                             if (toxav != NULL)
                             {
                                 if (global_play_status == PLAY_PLAYING)
                                 {
-                                    if (fifo_buffer_data_available(audio_pcm_buffer) >= (out_samples * out_channels * out_bytes_per_sample))
+                                    audio_delay_in_bytes = (out_samples * out_channels * out_bytes_per_sample) * global_audio_delay_factor; // n x 60 ms delay
+                                    if (fifo_buffer_data_available(audio_pcm_buffer) >= (out_samples * out_channels * out_bytes_per_sample) + (audio_delay_in_bytes))
                                     {
-                                        memset(buf, 0, temp_audio_buf_sizes);
+                                        // memset(buf, 0, temp_audio_buf_sizes);
                                         size_t read_bytes = fifo_buffer_read(audio_pcm_buffer, buf, out_samples * out_channels * out_bytes_per_sample);
                                         // printf("AA:read_bytes: %ld\n", read_bytes);
                                         Toxav_Err_Send_Frame error3;
@@ -1596,6 +1646,10 @@ static void *thread_key_func(void *data)
             {
                 break;
             }
+            else if (ch == 'a')
+            {
+                break;
+            }
             else if (ch == 'g')
             {
                 break;
@@ -1640,6 +1694,18 @@ static void *thread_key_func(void *data)
             global_need_video_seek = 1;
             global_need_audio_seek = 1;
             printf("KK:-----SEEK >>-----\n");
+        }
+        else if (ch == 'a')
+        {
+            if (global_audio_delay_factor <= 12)
+            {
+                global_audio_delay_factor++;
+            }
+            else
+            {
+                global_audio_delay_factor = 0;
+            }
+            printf("KK:-----AUDIO DELAY: %d\n", (60 * global_audio_delay_factor));
         }
         else if (ch == 'g')
         {
