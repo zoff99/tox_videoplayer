@@ -28,7 +28,7 @@
 
 /*
  * 
- gcc -O3 -g -fsanitize=address -static-libasan -fPIC tox_videoplayer.c $(pkg-config --cflags --libs libsodium libswresample opus vpx libavcodec libswscale libavformat libavutil x264) -pthread -o tox_videoplayer
+ gcc -O3 -g -fsanitize=address -static-libasan -fPIC tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
  * 
  */
 
@@ -44,12 +44,15 @@
 #include <unistd.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavdevice/avdevice.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
-#include <libswscale/swscale.h>
-#include <libswresample/swresample.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/time.h>
+#include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
+
+#include <X11/Xlib.h>
 
 #include <sodium/utils.h>
 
@@ -863,15 +866,56 @@ static void *ffmpeg_thread_video_func(void *data)
     AVFrame *frame = NULL;
     int video_stream_index = -1;
     int num_samples;
+    int output_width = 0;
+    int output_height = 0;
     uint8_t **converted_samples = NULL;
     int ret;
 
     char *inputfile = (char *) data;
 
-    // Open the input file
-    if ((ret = avformat_open_input(&format_ctx, inputfile, NULL, NULL)) < 0) {
-        fprintf(stderr, "Could not open input file '%s'\n", inputfile);
-        return NULL; // ret;
+    if (strncmp((char *)inputfile, "desktop", strlen((char *)"desktop")) == 0)
+    {
+        // captur desktop on X11 Linux
+        Display *display = XOpenDisplay(NULL);
+        if (display == NULL)
+        {
+            fprintf(stderr, "Could not find X11 Display.\n");
+            return NULL;
+        }
+        Window root = DefaultRootWindow(display);
+        XWindowAttributes attributes;
+        XGetWindowAttributes(display, root, &attributes);
+        int screen_width = attributes.width;
+        int screen_height = attributes.height;
+        XCloseDisplay(display);
+
+        fprintf(stderr, "Display Screen: %dx%d\n", screen_width, screen_height);
+
+        AVDictionary* options = NULL;
+        //Set some options
+        //grabbing frame rate
+        av_dict_set(&options, "framerate", "30", 0);
+        //Make the grabbed area follow the mouse
+        //av_dict_set(&options,"follow_mouse","centered",0);
+        //Video frame size. The default is to capture the full screen
+        av_dict_set(&options,"video_size","3840x2160",0);
+        output_width = 1920;
+        output_height = 1080;
+        AVInputFormat *ifmt = av_find_input_format("x11grab");
+        //Grab at position 10,20 ":0.0+10,20"
+        if (avformat_open_input(&format_ctx, ":0.0+0,0", ifmt, &options) != 0)
+        {
+            fprintf(stderr, "Could not desktop as input stream.\n");
+            return NULL;
+        }
+    }
+    else
+    {
+        // Open the input file
+        if ((ret = avformat_open_input(&format_ctx, inputfile, NULL, NULL)) < 0) {
+            fprintf(stderr, "Could not open input file '%s'\n", inputfile);
+            return NULL; // ret;
+        }
     }
 
     // Retrieve stream information
@@ -928,9 +972,20 @@ static void *ffmpeg_thread_video_func(void *data)
         return NULL; // AVERROR(ENOMEM);
     }
 
+    if ((video_codec_ctx->width > 1920) || (video_codec_ctx->height > 1080))
+    {
+        output_width = 1920;
+        output_height = 1080;
+    }
+    else
+    {
+        output_width = video_codec_ctx->width;
+        output_height = video_codec_ctx->height;
+    }
+
     // Allocate a buffer for the YUV data
     uint8_t *yuv_buffer = (uint8_t *)av_malloc(av_image_get_buffer_size(AV_PIX_FMT_YUV420P,
-            video_codec_ctx->width, video_codec_ctx->height, 1));
+            output_width, output_height, 1));
     if (yuv_buffer == NULL) {
         fprintf(stderr, "Error: could not allocate YUV buffer\n");
         return NULL; // 1;
@@ -938,12 +993,12 @@ static void *ffmpeg_thread_video_func(void *data)
 
     uint8_t *dst_yuv_buffer[3];
     dst_yuv_buffer[0] = yuv_buffer;
-    dst_yuv_buffer[1] = yuv_buffer + (video_codec_ctx->width * video_codec_ctx->height);
-    dst_yuv_buffer[2] = dst_yuv_buffer[1] + ((video_codec_ctx->width * video_codec_ctx->height) / 4);
+    dst_yuv_buffer[1] = yuv_buffer + (output_width * output_height);
+    dst_yuv_buffer[2] = dst_yuv_buffer[1] + ((output_width * output_height) / 4);
 
     // Create a scaler context to convert the video to YUV
     struct SwsContext *scaler_ctx = sws_getContext(video_codec_ctx->width, video_codec_ctx->height,
-            video_codec_ctx->pix_fmt, video_codec_ctx->width, video_codec_ctx->height,
+            video_codec_ctx->pix_fmt, output_width, output_height,
             AV_PIX_FMT_YUV420P, SWS_BILINEAR, NULL, NULL, NULL);
 
     if (scaler_ctx == NULL) {
@@ -951,7 +1006,7 @@ static void *ffmpeg_thread_video_func(void *data)
         return NULL; // 1;
     }
 
-    fprintf(stderr, "SwsContext: %dx%d\n", video_codec_ctx->width, video_codec_ctx->height);
+    fprintf(stderr, "SwsContext: %dx%d -> %dx%d\n", video_codec_ctx->width, video_codec_ctx->height, output_width, output_height);
 
     // Wait for friend to come online
     while (friend_online == 0)
@@ -1002,12 +1057,12 @@ static void *ffmpeg_thread_video_func(void *data)
 
                     // Convert the video frame to YUV
                     int planes_stride[3];
-                    planes_stride[0] = av_image_get_linesize(AV_PIX_FMT_YUV420P, video_codec_ctx->width, 0);
-                    planes_stride[1] = av_image_get_linesize(AV_PIX_FMT_YUV420P, video_codec_ctx->width, 1);
-                    planes_stride[2] = av_image_get_linesize(AV_PIX_FMT_YUV420P, video_codec_ctx->width, 2);
+                    planes_stride[0] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 0);
+                    planes_stride[1] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 1);
+                    planes_stride[2] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 2);
                     // fprintf(stderr, "VideoFrame:strides:%d %d %d\n",planes_stride[0],planes_stride[1],planes_stride[2]);
 
-                    sws_scale(scaler_ctx, (const uint8_t * const*)frame->data, frame->linesize, 0, video_codec_ctx->height,
+                    sws_scale(scaler_ctx, (const uint8_t * const*)frame->data, frame->linesize, 0, output_height,
                             dst_yuv_buffer, planes_stride);
 
                     int64_t pts = frame->pts;
@@ -1042,10 +1097,12 @@ static void *ffmpeg_thread_video_func(void *data)
                         {
                             if (global_play_status == PLAY_PLAYING)
                             {
+                                fprintf(stderr, "frame h:%d %d\n", frame->height, output_height);
+                                
                                 uint32_t frame_age_ms = 0;
                                 TOXAV_ERR_SEND_FRAME error2;
                                 bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
-                                            planes_stride[0], frame->height,
+                                            planes_stride[0], output_height,
                                             dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
                                             &error2, frame_age_ms);
 
@@ -1588,6 +1645,7 @@ int main(int argc, char *argv[])
 
     av_register_all();
     avformat_network_init();
+    avdevice_register_all();
 
     if (pthread_mutex_init(&time___mutex, NULL) != 0)
     {
