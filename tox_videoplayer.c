@@ -47,6 +47,7 @@
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/time.h>
 
 #include <sodium/utils.h>
 
@@ -74,6 +75,8 @@ static const char *savedata_tmp_filename = "./savedata.tox.tmp";
 static char *global_decoder_string = "";
 static char *global_encoder_string = "";
 static ToxAV *toxav = NULL;
+AVRational time_base_audio = (AVRational) {0, 0};
+AVRational time_base_video = (AVRational) {0, 0};
 
 struct Node1 {
     char *ip;
@@ -130,6 +133,12 @@ static time_t get_unix_time(void)
 {
     return time(NULL);
 }
+
+static int64_t pts_to_ms(int64_t pts, AVRational time_base)
+{
+    return av_rescale_q(pts, time_base, AV_TIME_BASE_Q) / 1000;
+}
+
 
 static void tox_log_cb__custom(Tox *tox, TOX_LOG_LEVEL level, const char *file, uint32_t line, const char *func,
                         const char *message, void *user_data)
@@ -303,6 +312,8 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
     int num_samples;
     uint8_t **converted_samples = NULL;
     int ret;
+    int64_t cur_ms = 0;
+    uint64_t old_mono_ts = current_time_monotonic_default2();
 
     char *inputfile = (char *) data;
 
@@ -348,6 +359,8 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
             }
             audio_stream_index = i;
             audio_codec = codec;
+
+            time_base_audio = format_ctx->streams[i]->time_base;
         }
         else if (codec_params->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_index < 0)
         {
@@ -366,6 +379,8 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
             }
             video_stream_index = i;
             video_codec = codec;
+
+            time_base_video = format_ctx->streams[i]->time_base;
         }
     }
 
@@ -427,9 +442,17 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
         yieldcpu(200);
     }
 
+    while (friend_in_call != 1)
+    {
+        yieldcpu(200);
+    }
+
+    cur_ms = -1000; // give 1 seconds lag delay
+    old_mono_ts = current_time_monotonic_default2();
+
     while (ffmpeg_thread_stop != 1)
     {
-        // Read packets from the input file and decode them
+        // Read packets from the input file and decode them        
         while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
         {
             if (packet.stream_index == audio_stream_index)
@@ -484,7 +507,8 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
                     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                     {
                         break;
-                    } else if (ret < 0)
+                    }
+                    else if (ret < 0)
                     {
                         fprintf(stderr, "Error during video decoding\n");
                         break;
@@ -505,6 +529,19 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
                     //             frame->linesize[0], frame->width, frame->height,
                     //             video_codec_ctx->frame_number, pts, frame->coded_picture_number);
 
+                    cur_ms = cur_ms + (int64_t)(current_time_monotonic_default2() - old_mono_ts);
+                    old_mono_ts = current_time_monotonic_default2();
+
+                    int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
+                    printf("PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
+                    printf("TS: %ld\n", cur_ms);
+
+                    if (ms > cur_ms)
+                    {
+                        printf("sleeping for %ld ms\n", (ms - cur_ms));
+                        usleep(1000 * (int)(ms - cur_ms));
+                    }
+
                     if (toxav != NULL)
                     {
                         uint32_t frame_age_ms = 0;
@@ -522,7 +559,6 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
                 }
             }
             av_packet_unref(&packet);
-            yieldcpu(10);
         }
 
         if (ffmpeg_thread_stop != 1)
@@ -700,10 +736,10 @@ int main(int argc, char *argv[])
     // ----------- main loop -----------
     while (1 == 1)
     {
-        tox_iterate(tox, NULL);
-        yieldcpu(2);
         toxav_iterate(toxav);
-        yieldcpu(2);
+        yieldcpu(1);
+        tox_iterate(tox, NULL);
+        yieldcpu(6);
     }
     // ----------- main loop -----------
 
