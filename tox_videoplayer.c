@@ -93,7 +93,7 @@ static int global_play_status = PLAY_PAUSED;
 static int64_t global_pts = 0;
 int64_t global_time_cur_ms = 0;
 int64_t global_time_old_mono_ts = 0;
-const int seek_delta_ms = 10000; // seek X seconds
+const int seek_delta_ms = 10 * 1000; // seek X seconds
 
 
 struct Node1 {
@@ -409,22 +409,75 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
 }
 #endif
 
+static void show_right_arrow()
+{
+
+#define WIDTH 32
+#define HEIGHT 32
+
+    // Allocate memory for the YUV image buffer
+    unsigned char *yuv_image = (unsigned char*) calloc(1, WIDTH * HEIGHT * 3 / 2 * sizeof(unsigned char));
+
+    // Set the Y component of the image to black
+    for (int i = 0; i < WIDTH * HEIGHT; i++)
+    {
+        yuv_image[i] = 16;
+    }
+
+    // Set the U and V components of the image to 128
+    for (int i = WIDTH * HEIGHT; i < WIDTH * HEIGHT * 3 / 2; i++)
+    {
+        yuv_image[i] = 128;
+    }
+
+    // Draw the right arrow on the image
+    for (int y = 0; y < HEIGHT; y++)
+    {
+        for (int x = 0; x < WIDTH; x++)
+        {
+            if (x >= y && x <= y + 2)
+            {
+                yuv_image[y * WIDTH + x] = 235;
+            }
+        }
+    }
 
 
-static int seek_backwards(AVFormatContext *format_ctx_seek, int stream_index, int seconds_to_seek)
+    bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
+                WIDTH, HEIGHT,
+                yuv_image, yuv_image + (WIDTH * HEIGHT), yuv_image + (WIDTH * HEIGHT) + ((WIDTH * HEIGHT) / 4),
+                NULL, 0);
+
+    // Free the memory allocated for the YUV image buffer
+    free(yuv_image);
+}
+
+static int seek_stream(AVFormatContext *format_ctx_seek, int stream_index, int seconds_to_seek, bool forward)
 {
     int64_t timestamp = format_ctx_seek->streams[stream_index]->start_time;
     while (timestamp < format_ctx_seek->streams[stream_index]->duration)
     {
-        timestamp -= seconds_to_seek * AV_TIME_BASE;
-        if (timestamp < 0) {
-            timestamp = 0;
-        }
-
-        if (av_seek_frame(format_ctx_seek, stream_index, timestamp, AVSEEK_FLAG_BACKWARD) < 0)
+        if (forward)
         {
-            printf("Error seeking\n");
-            return -1;
+            timestamp += seconds_to_seek * AV_TIME_BASE;
+            if (av_seek_frame(format_ctx_seek, stream_index, timestamp, AVSEEK_FLAG_ANY) < 0)
+            {
+                fprintf(stderr, "Error seeking forward\n");
+                return -1;
+            }
+        }
+        else
+        {
+            timestamp -= seconds_to_seek * AV_TIME_BASE;
+            if (timestamp < 0) {
+                timestamp = 0;
+            }
+
+            if (av_seek_frame(format_ctx_seek, stream_index, timestamp, AVSEEK_FLAG_ANY|AVSEEK_FLAG_BACKWARD) < 0)
+            {
+                fprintf(stderr, "Error seeking backward\n");
+                return -1;
+            }
         }
         return 0;
     }
@@ -613,12 +666,17 @@ static void *ffmpeg_thread_video_func(void *data)
                     int64_t pts = frame->pts;
                     int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
                     // printf("PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
-                    // printf("TS: %ld\n", cur_ms);
+                    // fprintf(stderr, "TS: frame %ld %ld\n", ms, global_pts);
 
-                    if ((global_play_status == PLAY_PLAYING) && ((ms + 200) < global_pts))
+                    bool cond = (global_play_status == PLAY_PLAYING) && ((ms + (seek_delta_ms - 200)) < global_pts);
+                    if (cond)
                     {
                         // skip frames, we are seeking forward most likely
-                        // fprintf(stderr, "SKIP frame\n");
+                        av_frame_unref(frame);
+                        int seek_res = seek_stream(format_ctx, video_stream_index, (seek_delta_ms / 1000), true);
+                        fprintf(stderr, "SKIP frame %d %ld %ld\n", global_play_status, ms, global_pts);
+                        fprintf(stderr, "SKIP frame res:%d\n", seek_res);
+                        show_right_arrow();
                     }
                     else
                     {
@@ -635,13 +693,14 @@ static void *ffmpeg_thread_video_func(void *data)
                                         planes_stride[0], frame->height,
                                         dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
                                         &error2, frame_age_ms);
+
                             if (error2 != TOXAV_ERR_SEND_FRAME_OK)
                             {
                                 fprintf(stderr, "toxav_video_send_frame_age:%d %d\n", (int)ret2, error2);
                             }
                         }
+                        av_frame_unref(frame);
                     }
-                    av_frame_unref(frame);
                 }
             }
             av_packet_unref(&packet);
@@ -1236,3 +1295,4 @@ int main(int argc, char *argv[])
 
     return 0;
 }
+
