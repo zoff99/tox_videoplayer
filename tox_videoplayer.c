@@ -91,6 +91,10 @@ pthread_mutex_t time___mutex;
 #define PLAY_PLAYING 1
 static int global_play_status = PLAY_PAUSED;
 static int64_t global_pts = 0;
+int64_t global_time_cur_ms = 0;
+int64_t global_time_old_mono_ts = 0;
+const int seek_delta_ms = 10000; // seek X seconds
+
 
 struct Node1 {
     char *ip;
@@ -407,26 +411,24 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
 
 
 
-static int seek_backwards(AVFormatContext *format_ctx_seek, int stream_index)
+static int seek_backwards(AVFormatContext *format_ctx_seek, int stream_index, int seconds_to_seek)
 {
     int64_t timestamp = format_ctx_seek->streams[stream_index]->start_time;
     while (timestamp < format_ctx_seek->streams[stream_index]->duration)
     {
-        timestamp -= 5 * AV_TIME_BASE;
+        timestamp -= seconds_to_seek * AV_TIME_BASE;
         if (timestamp < 0) {
             timestamp = 0;
         }
 
         if (av_seek_frame(format_ctx_seek, stream_index, timestamp, AVSEEK_FLAG_BACKWARD) < 0)
         {
-            printf("Error seeking in video file\n");
+            printf("Error seeking\n");
             return -1;
         }
-
         return 0;
     }
 }
-
 
 static void *ffmpeg_thread_video_func(void *data)
 {
@@ -613,22 +615,30 @@ static void *ffmpeg_thread_video_func(void *data)
                     // printf("PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
                     // printf("TS: %ld\n", cur_ms);
 
-                    while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
+                    if ((global_play_status == PLAY_PLAYING) && ((ms + 200) < global_pts))
                     {
-                        usleep(1000 * 4);
+                        // skip frames, we are seeking forward most likely
+                        // fprintf(stderr, "SKIP frame\n");
                     }
-
-                    if (toxav != NULL)
+                    else
                     {
-                        uint32_t frame_age_ms = 0;
-                        TOXAV_ERR_SEND_FRAME error2;
-                        bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
-                                    planes_stride[0], frame->height,
-                                    dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
-                                    &error2, frame_age_ms);
-                        if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+                        while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
                         {
-                            fprintf(stderr, "toxav_video_send_frame_age:%d %d\n", (int)ret2, error2);
+                            usleep(1000 * 4);
+                        }
+
+                        if (toxav != NULL)
+                        {
+                            uint32_t frame_age_ms = 0;
+                            TOXAV_ERR_SEND_FRAME error2;
+                            bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
+                                        planes_stride[0], frame->height,
+                                        dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
+                                        &error2, frame_age_ms);
+                            if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+                            {
+                                fprintf(stderr, "toxav_video_send_frame_age:%d %d\n", (int)ret2, error2);
+                            }
                         }
                     }
                     av_frame_unref(frame);
@@ -654,8 +664,6 @@ static void *ffmpeg_thread_video_func(void *data)
     printf("ffmpeg Video Thread:Clean thread exit!\n");
     return NULL;
 }
-
-
 
 static void *ffmpeg_thread_audio_func(void *data)
 {
@@ -831,24 +839,36 @@ static void *ffmpeg_thread_audio_func(void *data)
                     // printf("AA:PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
                     // printf("AA:TS: %ld\n", cur_ms);
 
-                    while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
+                    if ((global_play_status == PLAY_PLAYING) && ((ms + 200) < global_pts))
                     {
-                        usleep(1000 * 4);
+                        // skip frames, we are seeking forward most likely
+                        // drain audio fifo buffer
+                        fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
+                        fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
+                        fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
+                        fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
+                        // fprintf(stderr, "AA:SKIP frame\n");
                     }
-
-                    if (toxav != NULL)
+                    else
                     {
-                        if (fifo_buffer_data_available(audio_pcm_buffer) >= (out_samples * out_channels * out_bytes_per_sample))
+                        while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
                         {
-                            memset(buf, 0, temp_audio_buf_sizes);
-                            size_t read_bytes = fifo_buffer_read(audio_pcm_buffer, buf, out_samples * out_channels * out_bytes_per_sample);
-                            // printf("AA:read_bytes: %ld\n", read_bytes);
-                            Toxav_Err_Send_Frame error3;
-                            toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
-                                        out_channels, frame->sample_rate, &error3);
+                            usleep(1000 * 4);
+                        }
+
+                        if (toxav != NULL)
+                        {
+                            if (fifo_buffer_data_available(audio_pcm_buffer) >= (out_samples * out_channels * out_bytes_per_sample))
+                            {
+                                memset(buf, 0, temp_audio_buf_sizes);
+                                size_t read_bytes = fifo_buffer_read(audio_pcm_buffer, buf, out_samples * out_channels * out_bytes_per_sample);
+                                // printf("AA:read_bytes: %ld\n", read_bytes);
+                                Toxav_Err_Send_Frame error3;
+                                toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
+                                            out_channels, frame->sample_rate, &error3);
+                            }
                         }
                     }
-
                     av_freep(&converted_samples[0]);
                     av_freep(&converted_samples);
                 }
@@ -883,8 +903,8 @@ static void *thread_time_func(void *data)
     global_pts = 0;
     pthread_mutex_unlock(&time___mutex);
 
-    int64_t cur_ms = 0;
-    int64_t old_mono_ts = current_time_monotonic_default2();
+    global_time_cur_ms = 0;
+    global_time_old_mono_ts = current_time_monotonic_default2();
     int first_start = 1;
 
     while (thread_time_stop != 1)
@@ -896,18 +916,17 @@ static void *thread_time_func(void *data)
             if (first_start == 1)
             {
                 first_start = 0;
-                cur_ms = 0;
+                global_time_cur_ms = 0;
                 global_pts = 0;
-                old_mono_ts = current_time_monotonic_default2();
+                global_time_old_mono_ts = current_time_monotonic_default2();
             }
-            cur_ms = cur_ms + (int64_t)(current_time_monotonic_default2() - old_mono_ts);
-            old_mono_ts = current_time_monotonic_default2();
-            global_pts = cur_ms;
-            // printf("TT:pts_ms=%ld\n", global_pts);
+            global_time_cur_ms = global_time_cur_ms + (int64_t)(current_time_monotonic_default2() - global_time_old_mono_ts);
+            global_time_old_mono_ts = current_time_monotonic_default2();
+            global_pts = global_time_cur_ms;
         }
         else
         {
-            old_mono_ts = current_time_monotonic_default2();
+            global_time_old_mono_ts = current_time_monotonic_default2();
         }
         pthread_mutex_unlock(&time___mutex);
     }
@@ -936,18 +955,46 @@ static void *thread_key_func(void *data)
         tcsetattr(STDIN_FILENO, TCSANOW, &newt);
 
         /* Wait for a keypress */
-        while ((ch = getchar()) != ' ') {}
+        while (1 == 1)
+        {
+            ch = getchar();
+            if (ch == ' ')
+            {
+                break;
+            }
+            else if (ch == 'f')
+            {
+                break;
+            }
+            else if (ch == 'b')
+            {
+                break;
+            }
+        }
 
         pthread_mutex_lock(&time___mutex);
-        if (global_play_status == PLAY_PAUSED)
+        if (ch == ' ')
         {
-            global_play_status = PLAY_PLAYING;
-            printf("KK:----- PLAY  -----\n");
+            if (global_play_status == PLAY_PAUSED)
+            {
+                global_play_status = PLAY_PLAYING;
+                printf("KK:----- PLAY  -----\n");
+            }
+            else if (global_play_status == PLAY_PLAYING)
+            {
+                global_play_status = PLAY_PAUSED;
+                printf("KK:----- PAUSE -----\n");
+            }
         }
-        else if (global_play_status == PLAY_PLAYING)
+        else if (ch == 'f')
         {
-            global_play_status = PLAY_PAUSED;
-            printf("KK:----- PAUSE -----\n");
+            global_time_cur_ms = global_time_cur_ms + seek_delta_ms;
+            global_time_old_mono_ts = current_time_monotonic_default2();
+            printf("KK:-----SEEK >>-----\n");
+        }
+        else if (ch == 'b')
+        {
+            printf("KK:-----<< SEEK-----\n");
         }
         pthread_mutex_unlock(&time___mutex);
 
