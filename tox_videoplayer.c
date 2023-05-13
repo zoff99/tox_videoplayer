@@ -143,6 +143,87 @@ static int64_t pts_to_ms(int64_t pts, AVRational time_base)
 }
 
 
+
+
+
+
+
+typedef struct {
+    void* data;
+    size_t size;
+    size_t head;
+    size_t tail;
+} fifo_buffer_t;
+
+fifo_buffer_t* fifo_buffer_create(size_t size) {
+    fifo_buffer_t* buffer = calloc(1, sizeof(fifo_buffer_t));
+    buffer->data = calloc(1, size);
+    buffer->size = size;
+    buffer->head = 0;
+    buffer->tail = 0;
+    return buffer;
+}
+
+void fifo_buffer_destroy(fifo_buffer_t* buffer) {
+    free(buffer->data);
+    free(buffer);
+}
+
+size_t fifo_buffer_free(fifo_buffer_t* buffer) {
+    if ((buffer->tail == buffer->head) && (buffer->head == 0)){
+        return (buffer->size - 1);
+    } else {
+        if (buffer->tail > 0)
+        {
+            if (buffer->tail < buffer->head)
+            {
+                // move data to beginning of the buffer
+                memmove(buffer->data, buffer->data + buffer->tail, buffer->head - buffer->tail);
+            }
+            buffer->head -= buffer->tail;
+            buffer->tail = (size_t)0;
+        }
+        return buffer->size - buffer->head - 1;
+    }
+}
+
+size_t fifo_buffer_data_available(fifo_buffer_t* buffer) {
+    if ((buffer->tail == buffer->head) && (buffer->head == (size_t)0)) {
+        return (size_t)0;
+    } else {
+        return buffer->head - buffer->tail;
+    }
+}
+
+size_t fifo_buffer_write(fifo_buffer_t* buffer, const void* data, size_t size) {
+    size_t available = fifo_buffer_free(buffer);
+    if (size > available) {
+        size = available;
+    }
+    memcpy(buffer->data + buffer->head, data, size);
+    buffer->head += size;
+    return size;
+}
+
+size_t fifo_buffer_read(fifo_buffer_t* buffer, void* data, size_t size) {
+    size_t available = fifo_buffer_data_available(buffer);
+    if (size > available) {
+        size = available;
+    }
+    memcpy(data, buffer->data + buffer->tail, size);
+    buffer->tail += size;
+    return size;
+}
+
+
+
+
+
+
+
+
+
+
 static void tox_log_cb__custom(Tox *tox, TOX_LOG_LEVEL level, const char *file, uint32_t line, const char *func,
                         const char *message, void *user_data)
 {
@@ -296,6 +377,19 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
     else if (comm_value == TOXAV_CALL_COMM_ENCODER_CURRENT_BITRATE)
     {
         printf("ToxAV COMM: ENCODER_CURRENT_BITRATE=%ld\n", comm_number);
+        if (comm_number < 400)
+        {
+            TOXAV_ERR_OPTION_SET error2;
+            toxav_option_set(av, global_friend_num, TOXAV_ENCODER_VIDEO_MIN_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, &error2);
+
+            Toxav_Err_Bit_Rate_Set error;
+            toxav_video_set_bit_rate(av, global_friend_num, DEFAULT_GLOBAL_VID_BITRATE, &error);
+
+            TOXAV_ERR_OPTION_SET error3;
+            toxav_option_set(av, global_friend_num, TOXAV_ENCODER_VIDEO_MIN_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, &error3);
+
+            printf("ToxAV COMM: setting video bitrate to %d\n", DEFAULT_GLOBAL_VID_BITRATE);
+        }
     }
 }
 #endif
@@ -551,8 +645,15 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
     int ret;
     int64_t cur_ms = 0;
     uint64_t old_mono_ts = current_time_monotonic_default2();
+    const int out_channels = 2; // keep in sync with `out_channel_layout`
+    const int out_channel_layout = AV_CH_LAYOUT_STEREO; // AV_CH_LAYOUT_MONO or AV_CH_LAYOUT_STEREO;
+    const int out_bytes_per_sample = 2; // 2 byte per PCM16 sample
+    const int out_samples = 60 * 48; // X ms @ 48000Hz
+    const int out_sample_rate = 48000; // fixed at 48000Hz
+    const int temp_audio_buf_sizes = 50000; // fixed buffer
+    fifo_buffer_t* audio_pcm_buffer = fifo_buffer_create(temp_audio_buf_sizes);
 
-    char *inputfile = (char *) data;
+    char *inputfile = (char *)data;
 
     // Open the input file
     if ((ret = avformat_open_input(&format_ctx, inputfile, NULL, NULL)) < 0) {
@@ -635,7 +736,7 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
     }
 
     swr_ctx = swr_alloc_set_opts(NULL,
-                                 AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16, audio_codec_ctx->sample_rate,
+                                 out_channel_layout, AV_SAMPLE_FMT_S16, out_sample_rate,
                                  audio_codec_ctx->channel_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate,
                                  0, NULL);
     if (!swr_ctx) {
@@ -661,6 +762,8 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
 
     cur_ms = -1000; // give 1 seconds lag delay
     old_mono_ts = current_time_monotonic_default2();
+
+    uint8_t *buf = (uint8_t *)calloc(1, temp_audio_buf_sizes);
 
     while (ffmpeg_thread_audio_stop != 1)
     {
@@ -690,10 +793,13 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
                         break;
                     }
 
-                    const int out_channels = 2;
                     num_samples = swr_get_out_samples(swr_ctx, frame->nb_samples);
                     av_samples_alloc_array_and_samples(&converted_samples, NULL, out_channels, num_samples, AV_SAMPLE_FMT_S16, 0);
                     swr_convert(swr_ctx, converted_samples, num_samples, (const uint8_t **)frame->extended_data, frame->nb_samples);
+
+                    const int want_write_bytes = (num_samples * out_channels * out_bytes_per_sample);
+                    size_t written_bytes = fifo_buffer_write(audio_pcm_buffer, converted_samples[0], want_write_bytes);
+                    // printf("AA:written bytes: %ld wanted: %d\n", written_bytes, want_write_bytes);
 
                     // Do something with the converted samples here
                     int64_t pts = frame->pts;
@@ -704,33 +810,25 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
                     old_mono_ts = current_time_monotonic_default2();
 
                     int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
-                    printf("AA:PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
-                    printf("AA:TS: %ld\n", cur_ms);
+                    // printf("AA:PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
+                    // printf("AA:TS: %ld\n", cur_ms);
 
                     if (ms > cur_ms)
                     {
-                        printf("AA:sleeping for %ld ms\n", (ms - cur_ms));
+                        // printf("AA:sleeping for %ld ms\n", (ms - cur_ms));
                         usleep(1000 * (int)(ms - cur_ms));
                     }
 
                     if (toxav != NULL)
                     {
-                        const float samples_ms = (float)num_samples / ((float)(frame->sample_rate) / 1000.0f);
-                        const int samples_ms_loops = (int)(samples_ms / 8.0f);
-                        const int samples_per_loop = num_samples / samples_ms_loops;
-                        int16_t *buf = (int16_t *)converted_samples[0];
-                        for (int j=0;j<samples_ms_loops;j++)
+                        if (fifo_buffer_data_available(audio_pcm_buffer) >= (out_samples * out_channels * out_bytes_per_sample))
                         {
+                            memset(buf, 0, temp_audio_buf_sizes);
+                            size_t read_bytes = fifo_buffer_read(audio_pcm_buffer, buf, out_samples * out_channels * out_bytes_per_sample);
+                            // printf("AA:read_bytes: %ld\n", read_bytes);
                             Toxav_Err_Send_Frame error3;
-                            toxav_audio_send_frame(toxav, global_friend_num, buf, 240,
+                            toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
                                         out_channels, frame->sample_rate, &error3);
-                            buf = buf + samples_per_loop;
-                        }
-                        // if (error3 != TOXAV_ERR_SEND_FRAME_OK)
-                        {
-                            printf("AA:toxav_audio_send_frame: samples:%d ch:%d sr:%d ms:%f loops:%d spl:%d\n",
-                                    num_samples, out_channels, frame->sample_rate, samples_ms,
-                                    samples_ms_loops, samples_per_loop);
                         }
                     }
 
@@ -754,6 +852,8 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
     avcodec_free_context(&video_codec_ctx);
     avformat_close_input(&format_ctx);
     swr_free(&swr_ctx);
+    free(buf);
+    fifo_buffer_destroy(audio_pcm_buffer);
 
     printf("ffmpeg Audio Thread:Clean thread exit!\n");
     return NULL;
@@ -927,9 +1027,9 @@ int main(int argc, char *argv[])
     while (1 == 1)
     {
         toxav_iterate(toxav);
-        yieldcpu(1);
+        yieldcpu(2);
         tox_iterate(tox, NULL);
-        yieldcpu(6);
+        yieldcpu(8);
     }
     // ----------- main loop -----------
 
