@@ -34,6 +34,7 @@
 
 #define _GNU_SOURCE
 
+#include <stdbool.h>
 #include <ctype.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -50,7 +51,9 @@
 #include <sodium/utils.h>
 
 // define this before including toxcore amalgamation -------
-#define MIN_LOGGER_LEVEL LOGGER_LEVEL_DEBUG
+#define MIN_LOGGER_LEVEL LOGGER_LEVEL_WARNING
+#define HW_CODEC_CONFIG_UTOX_UB81
+#define HW_CODEC_CONFIG_HIGHVBITRATE
 // define this before including toxcore amalgamation -------
 
 // include toxcore amalgamation with ToxAV --------
@@ -63,12 +66,14 @@
 
 static int self_online = 0;
 static int friend_online = 0;
+static int friend_in_call = 0;
 static pthread_t ffmpeg_thread;
 static int ffmpeg_thread_stop = 1;
 static const char *savedata_filename = "./savedata.tox";
 static const char *savedata_tmp_filename = "./savedata.tox.tmp";
 static char *global_decoder_string = "";
 static char *global_encoder_string = "";
+static ToxAV *toxav = NULL;
 
 struct Node1 {
     char *ip;
@@ -168,15 +173,15 @@ static void friendlist_onConnectionChange(Tox *tox, uint32_t friend_number, TOX_
 {
     switch (status) {
         case TOX_CONNECTION_NONE:
-            printf("Lost connection to friend.\n");
+            printf("Lost connection to friend %d.\n", friend_number);
             friend_online = 0;
             break;
         case TOX_CONNECTION_TCP:
-            printf("Connected to friend using TCP.\n");
+            printf("Connected to friend %d using TCP.\n", friend_number);
             friend_online = 1;
             break;
         case TOX_CONNECTION_UDP:
-            printf("Connected to friend using UDP.\n");
+            printf("Connected to friend %d using UDP.\n", friend_number);
             friend_online = 2;
             break;
     }
@@ -190,13 +195,68 @@ static void friend_request_cb(Tox *tox, const uint8_t *public_key, const uint8_t
 
 static void call_state_callback(ToxAV *av, uint32_t friend_number, uint32_t state, void *user_data)
 {
-    printf("ToxAV Call State change:fn=%d state=%d\n", friend_number, state);
+    if ((state & 0) || (state & 1) || (state & 2))
+    {
+        printf("ToxAV Call State change:fn=%d state=%d **END**\n", friend_number, state);
+        friend_in_call = 0;
+    }
+    else
+    {
+        printf("ToxAV Call State change:fn=%d state=%d ok\n", friend_number, state);
+        friend_in_call = 1;
+    }
 }
 
 static void call_callback(ToxAV *av, uint32_t friend_number, bool audio_enabled, bool video_enabled, void *user_data)
 {
-    printf("incoming ToxAV Call from fn=%d\n", friend_number);
-    toxav_answer(av, friend_number, DEFAULT_GLOBAL_AUD_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, NULL);
+    TOXAV_ERR_ANSWER error;
+    bool res = toxav_answer(av, friend_number, DEFAULT_GLOBAL_AUD_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, &error);
+    if (error == TOXAV_ERR_ANSWER_OK)
+    {
+        friend_in_call = 1;
+        printf("incoming ToxAV Call from fn=%d answered OK audio_enabled=%d video_enabled=%d a=%d v=%d\n",
+                friend_number, (int)audio_enabled, (int)video_enabled, DEFAULT_GLOBAL_AUD_BITRATE, DEFAULT_GLOBAL_VID_BITRATE);
+    }
+    else
+    {
+        friend_in_call = 0;
+        printf("incoming ToxAV Call from fn=%d **failed to answer** res=%d\n", friend_number, error);
+    }
+}
+
+static void t_toxav_receive_video_frame_cb(ToxAV *av, uint32_t friend_number,
+        uint16_t width, uint16_t height,
+        uint8_t const *y, uint8_t const *u, uint8_t const *v,
+        int32_t ystride, int32_t ustride, int32_t vstride,
+        void *user_data)
+{
+}
+
+static void t_toxav_receive_video_frame_pts_cb(ToxAV *av, uint32_t friend_number,
+        uint16_t width, uint16_t height,
+        const uint8_t *y, const uint8_t *u, const uint8_t *v,
+        int32_t ystride, int32_t ustride, int32_t vstride,
+        void *user_data, uint64_t pts)
+{
+}
+
+static void t_toxav_receive_audio_frame_cb(ToxAV *av, uint32_t friend_number,
+        int16_t const *pcm,
+        size_t sample_count,
+        uint8_t channels,
+        uint32_t sampling_rate,
+        void *user_data)
+{
+}
+
+static void t_toxav_receive_audio_frame_pts_cb(ToxAV *av, uint32_t friend_number,
+        int16_t const *pcm,
+        size_t sample_count,
+        uint8_t channels,
+        uint32_t sampling_rate,
+        void *user_data,
+        uint64_t pts)
+{
 }
 
 #ifdef TOX_HAVE_TOXAV_CALLBACKS_002
@@ -220,6 +280,10 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
     {
         global_encoder_string = " H264";
         printf("ToxAV COMM: %s\n", global_encoder_string);
+    }
+    else if (comm_value == TOXAV_CALL_COMM_ENCODER_CURRENT_BITRATE)
+    {
+        printf("ToxAV COMM: ENCODER_CURRENT_BITRATE=%ld\n", comm_number);
     }
 }
 #endif
@@ -255,30 +319,38 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
     }
 
     // Find the audio and video streams
-    for (int i = 0; i < format_ctx->nb_streams; i++) {
+    for (int i = 0; i < format_ctx->nb_streams; i++)
+    {
         AVCodecParameters *codec_params = format_ctx->streams[i]->codecpar;
         AVCodec *codec = avcodec_find_decoder(codec_params->codec_id);
-        if (!codec) {
+        if (!codec)
+        {
             fprintf(stderr, "Unsupported codec!\n");
             continue;
         }
-        if (codec_params->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_index < 0) {
+        if (codec_params->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_index < 0)
+        {
             audio_codec_ctx = avcodec_alloc_context3(codec);
-            if (!audio_codec_ctx) {
+            if (!audio_codec_ctx)
+            {
                 fprintf(stderr, "Could not allocate audio codec context\n");
                 return NULL; // AVERROR(ENOMEM);
             }
-            if ((ret = avcodec_parameters_to_context(audio_codec_ctx, codec_params)) < 0) {
+            if ((ret = avcodec_parameters_to_context(audio_codec_ctx, codec_params)) < 0)
+            {
                 fprintf(stderr, "Could not copy audio codec parameters to context\n");
                 return NULL; // ret;
             }
-            if ((ret = avcodec_open2(audio_codec_ctx, codec, NULL)) < 0) {
+            if ((ret = avcodec_open2(audio_codec_ctx, codec, NULL)) < 0)
+            {
                 fprintf(stderr, "Could not open audio codec\n");
                 return NULL; // ret;
             }
             audio_stream_index = i;
             audio_codec = codec;
-        } else if (codec_params->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_index < 0) {
+        }
+        else if (codec_params->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_index < 0)
+        {
             video_codec_ctx = avcodec_alloc_context3(codec);
             if (!video_codec_ctx) {
                 fprintf(stderr, "Could not allocate video codec context\n");
@@ -310,8 +382,6 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
         return NULL; // AVERROR(ENOMEM);
     }
 
-
-
     swr_ctx = swr_alloc_set_opts(NULL,
                                  AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16, audio_codec_ctx->sample_rate,
                                  audio_codec_ctx->channel_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate,
@@ -325,9 +395,6 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
         fprintf(stderr, "Could not initialize resampler context\n");
         return NULL; // 1;
     }
-
-
-
 
     // Allocate a buffer for the YUV data
     uint8_t *yuv_buffer = (uint8_t *)av_malloc(av_image_get_buffer_size(AV_PIX_FMT_YUV420P,
@@ -354,99 +421,118 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
 
     fprintf(stderr, "SwsContext: %dx%d\n", video_codec_ctx->width, video_codec_ctx->height);
 
-
+    // Wait for friend to come online
     while (friend_online == 0)
     {
-        yieldcpu(100);
+        yieldcpu(200);
     }
 
-    // Read packets from the input file and decode them
-    while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_stop != 1))
+    while (ffmpeg_thread_stop != 1)
     {
-        if (packet.stream_index == audio_stream_index)
+        // Read packets from the input file and decode them
+        while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
         {
-            // Decode audio packet
-            ret = avcodec_send_packet(audio_codec_ctx, &packet);
-            if (ret < 0)
+            if (packet.stream_index == audio_stream_index)
             {
-                fprintf(stderr, "Error sending audio packet for decoding\n");
-                break;
-            }
-
-            while (ret >= 0)
-            {
-               ret = avcodec_receive_frame(audio_codec_ctx, frame);
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                // Decode audio packet
+                ret = avcodec_send_packet(audio_codec_ctx, &packet);
+                if (ret < 0)
                 {
-                    break;
-                }
-                else if (ret < 0)
-                {
-                    fprintf(stderr, "Error during audio decoding\n");
+                    fprintf(stderr, "Error sending audio packet for decoding\n");
                     break;
                 }
 
-                num_samples = swr_get_out_samples(swr_ctx, frame->nb_samples);
-                av_samples_alloc_array_and_samples(&converted_samples, NULL, 2, num_samples, AV_SAMPLE_FMT_S16, 0);
-                swr_convert(swr_ctx, converted_samples, num_samples, (const uint8_t **)frame->extended_data, frame->nb_samples);
+                while (ret >= 0)
+                {
+                   ret = avcodec_receive_frame(audio_codec_ctx, frame);
+                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                    {
+                        break;
+                    }
+                    else if (ret < 0)
+                    {
+                        fprintf(stderr, "Error during audio decoding\n");
+                        break;
+                    }
 
-                // Do something with the converted samples here
-                int64_t pts = frame->pts;
-                // fprintf(stderr, "AudioFrame:fn:%10d pts:%10ld sr:%5d ch:%1d samples:%3d\n",
-                //     audio_codec_ctx->frame_number, pts, frame->sample_rate, 2, num_samples);
+                    num_samples = swr_get_out_samples(swr_ctx, frame->nb_samples);
+                    av_samples_alloc_array_and_samples(&converted_samples, NULL, 2, num_samples, AV_SAMPLE_FMT_S16, 0);
+                    swr_convert(swr_ctx, converted_samples, num_samples, (const uint8_t **)frame->extended_data, frame->nb_samples);
 
-                av_freep(&converted_samples[0]);
-                av_freep(&converted_samples);
+                    // Do something with the converted samples here
+                    int64_t pts = frame->pts;
+                    // fprintf(stderr, "AudioFrame:fn:%10d pts:%10ld sr:%5d ch:%1d samples:%3d\n",
+                    //     audio_codec_ctx->frame_number, pts, frame->sample_rate, 2, num_samples);
+
+                    av_freep(&converted_samples[0]);
+                    av_freep(&converted_samples);
+                }
             }
+            else if (packet.stream_index == video_stream_index)
+            {
+                // Decode video packet
+                ret = avcodec_send_packet(video_codec_ctx, &packet);
+                if (ret < 0)
+                {
+                    fprintf(stderr, "Error sending video packet for decoding\n");
+                    break;
+                }
+
+                while (ret >= 0)
+                {
+                    ret = avcodec_receive_frame(video_codec_ctx, frame);
+                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                    {
+                        break;
+                    } else if (ret < 0)
+                    {
+                        fprintf(stderr, "Error during video decoding\n");
+                        break;
+                    }
+
+                    // Convert the video frame to YUV
+                    int planes_stride[3];
+                    planes_stride[0] = av_image_get_linesize(AV_PIX_FMT_YUV420P, video_codec_ctx->width, 0);
+                    planes_stride[1] = av_image_get_linesize(AV_PIX_FMT_YUV420P, video_codec_ctx->width, 1);
+                    planes_stride[2] = av_image_get_linesize(AV_PIX_FMT_YUV420P, video_codec_ctx->width, 2);
+                    // fprintf(stderr, "VideoFrame:strides:%d %d %d\n",planes_stride[0],planes_stride[1],planes_stride[2]);
+
+                    sws_scale(scaler_ctx, (const uint8_t * const*)frame->data, frame->linesize, 0, video_codec_ctx->height,
+                            dst_yuv_buffer, planes_stride);
+
+                    int64_t pts = frame->pts;
+                    // fprintf(stderr, "VideoFrame:ls:%d %dx%d fn:%10d pts:%10ld pn:%10d\n",
+                    //             frame->linesize[0], frame->width, frame->height,
+                    //             video_codec_ctx->frame_number, pts, frame->coded_picture_number);
+
+                    if (toxav != NULL)
+                    {
+                        uint32_t frame_age_ms = 0;
+                        TOXAV_ERR_SEND_FRAME error2;
+                        bool ret2 = toxav_video_send_frame_age(toxav, 0,
+                                    planes_stride[0], frame->height,
+                                    dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
+                                    &error2, frame_age_ms);
+                        if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+                        {
+                            fprintf(stderr, "toxav_video_send_frame_age:%d %d\n", (int)ret2, error2);
+                        }
+                    }
+                    av_frame_unref(frame);
+                }
+            }
+            av_packet_unref(&packet);
+            yieldcpu(10);
         }
-        else if (packet.stream_index == video_stream_index)
+
+        if (ffmpeg_thread_stop != 1)
         {
-            // Decode video packet
-            ret = avcodec_send_packet(video_codec_ctx, &packet);
-            if (ret < 0)
-            {
-                fprintf(stderr, "Error sending video packet for decoding\n");
-                break;
-            }
-
-            while (ret >= 0)
-            {
-                ret = avcodec_receive_frame(video_codec_ctx, frame);
-                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                {
-                    break;
-                } else if (ret < 0)
-                {
-                    fprintf(stderr, "Error during video decoding\n");
-                    break;
-                }
-
-                // Convert the video frame to YUV
-                int planes_stride[3];
-                planes_stride[0] = av_image_get_linesize(AV_PIX_FMT_YUV420P, video_codec_ctx->width, 0);
-                planes_stride[1] = av_image_get_linesize(AV_PIX_FMT_YUV420P, video_codec_ctx->width, 1);
-                planes_stride[2] = av_image_get_linesize(AV_PIX_FMT_YUV420P, video_codec_ctx->width, 2);
-                // fprintf(stderr, "VideoFrame:strides:%d %d %d\n",planes_stride[0],planes_stride[1],planes_stride[2]);
-
-                sws_scale(scaler_ctx, (const uint8_t * const*)frame->data, frame->linesize, 0, video_codec_ctx->height,
-                        dst_yuv_buffer, planes_stride);
-
-                int64_t pts = frame->pts;
-                // fprintf(stderr, "VideoFrame:ls:%d %dx%d fn:%10d pts:%10ld pn:%10d\n",
-                //             frame->linesize[0], frame->width, frame->height,
-                //             video_codec_ctx->frame_number, pts, frame->coded_picture_number);
-
-                av_frame_unref(frame);
-            }
+            // fprintf(stderr, "waiting for friend ...\n");
+            yieldcpu(400);
         }
-        av_packet_unref(&packet);
-        yieldcpu(1000 / 30);
     }
 
     // Clean up
-    ffmpeg_thread = 1;
-    pthread_join(ffmpeg_thread, NULL);
-    //
     av_frame_free(&frame);
     avcodec_free_context(&audio_codec_ctx);
     avcodec_free_context(&video_codec_ctx);
@@ -514,6 +600,7 @@ int main(int argc, char *argv[])
 
     self_online = 0;
     friend_online = 0;
+    friend_in_call = 0;
 
 #ifndef TOX_HAVE_TOXUTIL
     printf("init Tox\n");
@@ -523,7 +610,7 @@ int main(int argc, char *argv[])
     Tox *tox = tox_utils_new(&options, NULL);
 #endif
     printf("init ToxAV\n");
-    ToxAV *toxav = toxav_new(tox, NULL);
+    toxav = toxav_new(tox, NULL);
 
     updateToxSavedata(tox);
 
@@ -540,6 +627,10 @@ int main(int argc, char *argv[])
 
     toxav_callback_call_state(toxav, call_state_callback, NULL);
     toxav_callback_call(toxav, call_callback, NULL);
+    toxav_callback_video_receive_frame(toxav, t_toxav_receive_video_frame_cb, NULL);
+    toxav_callback_video_receive_frame_pts(toxav, t_toxav_receive_video_frame_pts_cb, NULL);
+    toxav_callback_audio_receive_frame(toxav, t_toxav_receive_audio_frame_cb, NULL);
+    toxav_callback_audio_receive_frame_pts(toxav, t_toxav_receive_audio_frame_pts_cb, NULL);
 #ifdef TOX_HAVE_TOXAV_CALLBACKS_002
     printf("have toxav_callback_call_comm\n");
     toxav_callback_call_comm(toxav, call_comm_callback, NULL);
@@ -601,7 +692,7 @@ int main(int argc, char *argv[])
     }
     else
     {
-        pthread_setname_np(ffmpeg_thread, "t_notif");
+        pthread_setname_np(ffmpeg_thread, "t_ffmpeg");
         printf("ffmpeg Thread successfully created\n");
     }
 
@@ -615,12 +706,6 @@ int main(int argc, char *argv[])
         yieldcpu(2);
     }
     // ----------- main loop -----------
-
-
-
-
-
-
 
     // Clean up
     ffmpeg_thread = 1;
