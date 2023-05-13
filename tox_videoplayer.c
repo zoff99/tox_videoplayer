@@ -53,6 +53,9 @@ int main(int argc, char *argv[]) {
     AVFrame *frame = NULL;
     int audio_stream_index = -1;
     int video_stream_index = -1;
+    int got_frame;
+    int num_samples;
+    uint8_t **converted_samples = NULL;
     int ret;
 
     if (argc < 2)
@@ -187,19 +190,27 @@ int main(int argc, char *argv[]) {
                 fprintf(stderr, "Error sending audio packet for decoding\n");
                 break;
             }
+
             while (ret >= 0) {
-                ret = avcodec_receive_frame(audio_codec_ctx, frame);
+               ret = avcodec_receive_frame(audio_codec_ctx, frame);
                 if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
                     break;
                 } else if (ret < 0) {
                     fprintf(stderr, "Error during audio decoding\n");
                     break;
                 }
-                // Do something with the audio frame here
-                int64_t pts = frame->pts;
-                fprintf(stderr, "AudioFrame:fn:%10d pts:%10ld sr:%5d ch:%1d\n",
-                            audio_codec_ctx->frame_number, pts, frame->sample_rate, frame->channels);
 
+                num_samples = swr_get_out_samples(swr_ctx, frame->nb_samples);
+                av_samples_alloc_array_and_samples(&converted_samples, NULL, 2, num_samples, AV_SAMPLE_FMT_S16, 0);
+                swr_convert(swr_ctx, converted_samples, num_samples, (const uint8_t **)frame->extended_data, frame->nb_samples);
+
+                // Do something with the converted samples here
+                int64_t pts = frame->pts;
+                fprintf(stderr, "AudioFrame:fn:%10d pts:%10ld sr:%5d ch:%1d samples:%3d\n",
+                    audio_codec_ctx->frame_number, pts, frame->sample_rate, 2, num_samples);
+
+                av_freep(&converted_samples[0]);
+                av_freep(&converted_samples);
             }
         } else if (packet.stream_index == video_stream_index) {
             // Decode video packet
