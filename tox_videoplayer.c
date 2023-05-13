@@ -34,9 +34,10 @@
 
 #define _GNU_SOURCE
 
-#include <stdbool.h>
 #include <ctype.h>
+#include <getopt.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,12 +68,23 @@
 // include toxcore amalgamation with ToxAV --------
 
 
+// ----------- version -----------
+// ----------- version -----------
+#define TOX_VPLAYER_VERSION_MAJOR 0
+#define TOX_VPLAYER_VERSION_MINOR 99
+#define TOX_VPLAYER_VERSION_PATCH 2
+static const char global_tox_vplayer_version_string[] = "0.99.2";
+
+// ----------- version -----------
+// ----------- version -----------
+
 #define DEFAULT_GLOBAL_AUD_BITRATE 32 // kbit/sec
 #define DEFAULT_GLOBAL_VID_BITRATE 8000 // kbit/sec
 
 static int self_online = 0;
 static int friend_online = 0;
 static int friend_in_call = 0;
+static int switch_tcponly = 0;
 static pthread_t ffmpeg_thread_video;
 static int ffmpeg_thread_video_stop = 1;
 static pthread_t ffmpeg_thread_audio;
@@ -1298,10 +1310,13 @@ static void *ffmpeg_thread_audio_func(void *data)
         return NULL; // AVERROR(ENOMEM);
     }
 
-    //if (audio_codec_ctx->channel_layout == 0)
+    if (strncmp((char *)inputfile, "desktop", strlen((char *)"desktop")) == 0)
     {
-        // HINT: no idea what to do here. just guess STEREO?
-        audio_codec_ctx->channel_layout = AV_CH_LAYOUT_STEREO;
+        //if (audio_codec_ctx->channel_layout == 0)
+        {
+            // HINT: no idea what to do here. just guess STEREO?
+            audio_codec_ctx->channel_layout = AV_CH_LAYOUT_STEREO;
+        }
     }
 
     swr_ctx = swr_alloc_set_opts(NULL,
@@ -1412,7 +1427,7 @@ static void *ffmpeg_thread_audio_func(void *data)
                         fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
                         fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
                         fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
-                        fprintf(stderr, "AA:SKIP frame\n");
+                        // fprintf(stderr, "AA:SKIP frame\n");
                     }
                     else
                     {
@@ -1697,13 +1712,66 @@ static void *thread_key_func(void *data)
 
 int main(int argc, char *argv[])
 {
-    if (argc < 2)
+    char *input_file_arg_str = NULL;
+    int opt;
+    const char     *short_opt = "hvti:";
+    struct option   long_opt[] =
+    {
+        {"help",          no_argument,       NULL, 'h'},
+        {"version",       no_argument,       NULL, 'v'},
+        {NULL,            0,                 NULL,  0 }
+    };
+
+    while ((opt = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1)
+    {
+        switch (opt)
+        {
+            case -1:       /* no more arguments */
+            case 0:        /* long options toggles */
+                break;
+
+            case 't':
+                switch_tcponly = 1;
+                break;
+
+            case 'v':
+                printf("ToxVideoplayer version: %s\n", global_tox_vplayer_version_string);
+                return (0);
+
+            case 'h':
+                printf("Usage: %s [OPTIONS]\n", argv[0]);
+                printf("  -t,                                  tcp only mode\n");
+                printf("  -i,                                  input filename or \"desktop\"\n");
+                printf("  -v, --version                        show version\n");
+                printf("  -h, --help                           print this help and exit\n");
+                printf("\n");
+                return (0);
+
+            case 'i':
+                input_file_arg_str = optarg;
+                break;
+
+            case ':':
+            case '?':
+                fprintf(stderr, "Try `%s --help' for more information.\n", argv[0]);
+                return (-2);
+
+            default:
+                fprintf(stderr, "%s: invalid option -- %c\n", argv[0], opt);
+                fprintf(stderr, "Try `%s --help' for more information.\n", argv[0]);
+                return (-2);
+        }
+    }
+
+    printf("ToxVideoplayer version: %s\n", global_tox_vplayer_version_string);
+
+    if (input_file_arg_str == NULL)
     {
         fprintf(stderr, "no input file specified\n");
         return 0;
     }
 
-    fprintf(stderr, "input file: %s\n", argv[1]);
+    fprintf(stderr, "input file: %s\n", input_file_arg_str);
 
     av_register_all();
     avformat_network_init();
@@ -1728,6 +1796,18 @@ int main(int argc, char *argv[])
     options.tcp_port = 0; // disable tcp relay function!
     options.log_callback = tox_log_cb__custom;
     // ----- set options ------
+
+    if (switch_tcponly == 0)
+    {
+        options.udp_enabled = true; // UDP mode
+        printf("setting UDP mode\n");
+    }
+    else
+    {
+        options.udp_enabled = false; // TCP mode
+        printf("setting TCP mode\n");
+    }
+
 
     FILE *f = fopen(savedata_filename, "rb");
     uint8_t *savedata = NULL;
@@ -1843,7 +1923,7 @@ int main(int argc, char *argv[])
 
 
     ffmpeg_thread_video_stop = 0;
-    if (pthread_create(&ffmpeg_thread_video, NULL, ffmpeg_thread_video_func, (void *)argv[1]) != 0)
+    if (pthread_create(&ffmpeg_thread_video, NULL, ffmpeg_thread_video_func, (void *)input_file_arg_str) != 0)
     {
         printf("ffmpeg Video Thread create failed\n");
     }
@@ -1855,7 +1935,7 @@ int main(int argc, char *argv[])
 
 
     ffmpeg_thread_audio_stop = 0;
-    if (pthread_create(&ffmpeg_thread_audio, NULL, ffmpeg_thread_audio_func, (void *)argv[1]) != 0)
+    if (pthread_create(&ffmpeg_thread_audio, NULL, ffmpeg_thread_audio_func, (void *)input_file_arg_str) != 0)
     {
         printf("ffmpeg Audio Thread create failed\n");
     }
