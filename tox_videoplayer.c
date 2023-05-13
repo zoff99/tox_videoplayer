@@ -412,36 +412,30 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
 static void show_right_arrow()
 {
 
-#define WIDTH 32
-#define HEIGHT 32
+#define WIDTH 128
+#define HEIGHT 128
 
     // Allocate memory for the YUV image buffer
     unsigned char *yuv_image = (unsigned char*) calloc(1, WIDTH * HEIGHT * 3 / 2 * sizeof(unsigned char));
 
     // Set the Y component of the image to black
-    for (int i = 0; i < WIDTH * HEIGHT; i++)
-    {
+    for (int i = 0; i < WIDTH * HEIGHT; i++) {
         yuv_image[i] = 16;
     }
 
     // Set the U and V components of the image to 128
-    for (int i = WIDTH * HEIGHT; i < WIDTH * HEIGHT * 3 / 2; i++)
-    {
+    for (int i = WIDTH * HEIGHT; i < WIDTH * HEIGHT * 3 / 2; i++) {
         yuv_image[i] = 128;
     }
 
     // Draw the right arrow on the image
-    for (int y = 0; y < HEIGHT; y++)
-    {
-        for (int x = 0; x < WIDTH; x++)
-        {
-            if (x >= y && x <= y + 2)
-            {
+    for (int y = 0; y < HEIGHT; y++) {
+        for (int x = 0; x < WIDTH; x++) {
+            if (x >= y && x <= y + 2) {
                 yuv_image[y * WIDTH + x] = 235;
             }
         }
     }
-
 
     bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
                 WIDTH, HEIGHT,
