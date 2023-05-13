@@ -72,8 +72,8 @@
 // ----------- version -----------
 #define TOX_VPLAYER_VERSION_MAJOR 0
 #define TOX_VPLAYER_VERSION_MINOR 99
-#define TOX_VPLAYER_VERSION_PATCH 2
-static const char global_tox_vplayer_version_string[] = "0.99.2";
+#define TOX_VPLAYER_VERSION_PATCH 3
+static const char global_tox_vplayer_version_string[] = "0.99.3";
 
 // ----------- version -----------
 // ----------- version -----------
@@ -112,11 +112,13 @@ pthread_mutex_t time___mutex;
 #define PLAY_PAUSED 0
 #define PLAY_PLAYING 1
 static int global_need_video_seek = 0;
+static int global_need_audio_seek = 0;
 static int global_play_status = PLAY_PAUSED;
 static int64_t global_pts = 0;
 int64_t global_time_cur_ms = 0;
 int64_t global_time_old_mono_ts = 0;
 const int seek_delta_ms = 30 * 1000; // seek X seconds
+const int seek_delta_ms_faster = 5 * 60 * 1000; // seek X minutes
 
 
 struct Node1 {
@@ -824,40 +826,14 @@ static int seek_stream(AVFormatContext *format_ctx_seek, AVCodecContext *codec_c
 
     printf("seek_stream:start time=%ld cur_pos=%ld sec_to_seek=%d m_target_ts=%ld\n",
             timestamp, cur_pos, 0, m_target_ts);
-    // avcodec_flush_buffers(codec_context);
+    avcodec_flush_buffers(codec_context);
 
     // Here we seek within given stream index and the correct timestamp 
     // for that stream. Using AVSEEK_FLAG_BACKWARD to make sure we're 
     // always *before* requested timestamp.
     int err;
-    err = av_seek_frame(format_ctx_seek, stream_index, m_target_ts, AVSEEK_FLAG_BACKWARD);
-    fprintf(stderr, "Error seeking forward: %s\n", av_err2str(err));
-
-/*
-    if (forward)
-    {
-        cur_pos += ms_to_seek;
-        if (av_seek_frame(format_ctx_seek, stream_index, cur_pos, AVSEEK_FLAG_ANY) < 0)
-        {
-            fprintf(stderr, "Error seeking forward\n");
-            return -1;
-        }
-    }
-    else
-    {
-        cur_pos -= ms_to_seek;
-        if (cur_pos < 0) {
-            cur_pos = 0;
-        }
-
-        if (av_seek_frame(format_ctx_seek, stream_index, cur_pos, AVSEEK_FLAG_BACKWARD) < 0)
-        {
-            fprintf(stderr, "Error seeking backward\n");
-            return -1;
-        }
-    }
-*/
-
+    err = av_seek_frame(format_ctx_seek, stream_index, m_target_ts, AVSEEK_FLAG_ANY | AVSEEK_FLAG_BACKWARD);
+    fprintf(stderr, "seeking result: %s\n", av_err2str(err));
     return 0;
 }
 
@@ -1144,7 +1120,7 @@ static void *ffmpeg_thread_video_func(void *data)
                     int64_t pts = frame->pts;
                     int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
                     // printf("PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
-                    fprintf(stderr, "TS: frame %ld %ld\n", ms, global_pts);
+                    // fprintf(stderr, "TS: frame %ld %ld\n", ms, global_pts);
 
                     // HINT: check this again when no PTS is available!! -----------------
                     //if (labs(ms - global_pts) > 4000)
@@ -1170,7 +1146,7 @@ static void *ffmpeg_thread_video_func(void *data)
                             // skip frames, we are seeking forward most likely
                             av_frame_unref(frame);
                             //int seek_res = seek_stream(format_ctx, video_codec_ctx, video_stream_index);
-                            fprintf(stderr, "SKIP frame %d %ld %ld\n", global_play_status, ms, global_pts);
+                            // fprintf(stderr, "SKIP frame %d %ld %ld\n", global_play_status, ms, global_pts);
                             show_seek_forward();
                         }
                         else
@@ -1467,45 +1443,56 @@ static void *ffmpeg_thread_audio_func(void *data)
                     int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
                     // printf("AA:PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_video.num, time_base_video.den, ms);
 
+                    /*
                     if (labs(ms - global_pts) > 4000)
                     {
                         ms = global_pts;
                         // printf("AA:timestamps broken, just play\n");
                     }
+                    */
 
-                    if ((global_play_status == PLAY_PLAYING) && ((ms + 200) < global_pts))
+                    if (global_need_audio_seek != 0)
                     {
-                        // skip frames, we are seeking forward most likely
-                        // drain audio fifo buffer
-                        fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
-                        fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
-                        fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
-                        fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
-                        // fprintf(stderr, "AA:SKIP frame\n");
+                        global_need_audio_seek = 0;
+                        int seek_res = seek_stream(format_ctx, audio_codec_ctx, audio_stream_index);
+                        fprintf(stderr, "AA:seek frame res:%d\n", seek_res);
                     }
                     else
                     {
-                        while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
+                        if ((global_play_status == PLAY_PLAYING) && ((ms + 100) < global_pts))
                         {
-                            usleep(1000 * 4);
+                            // skip frames, we are seeking forward most likely
+                            // drain audio fifo buffer
+                            fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
+                            fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
+                            fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
+                            fifo_buffer_read(audio_pcm_buffer, buf, 1000 * out_channels * out_bytes_per_sample);
+                            // fprintf(stderr, "AA:SKIP frame\n");
                         }
-
-                        if (toxav != NULL)
+                        else
                         {
-                            if (global_play_status == PLAY_PLAYING)
+                            while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
                             {
-                                if (fifo_buffer_data_available(audio_pcm_buffer) >= (out_samples * out_channels * out_bytes_per_sample))
+                                usleep(1000 * 4);
+                            }
+
+                            if (toxav != NULL)
+                            {
+                                if (global_play_status == PLAY_PLAYING)
                                 {
-                                    memset(buf, 0, temp_audio_buf_sizes);
-                                    size_t read_bytes = fifo_buffer_read(audio_pcm_buffer, buf, out_samples * out_channels * out_bytes_per_sample);
-                                    // printf("AA:read_bytes: %ld\n", read_bytes);
-                                    Toxav_Err_Send_Frame error3;
-                                    toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
-                                                out_channels, out_sample_rate, &error3);
-                                    if (error3 != TOXAV_ERR_SEND_FRAME_OK)
+                                    if (fifo_buffer_data_available(audio_pcm_buffer) >= (out_samples * out_channels * out_bytes_per_sample))
                                     {
-                                        fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d\n",
-                                            error3, out_samples, out_channels, out_sample_rate);
+                                        memset(buf, 0, temp_audio_buf_sizes);
+                                        size_t read_bytes = fifo_buffer_read(audio_pcm_buffer, buf, out_samples * out_channels * out_bytes_per_sample);
+                                        // printf("AA:read_bytes: %ld\n", read_bytes);
+                                        Toxav_Err_Send_Frame error3;
+                                        toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
+                                                    out_channels, out_sample_rate, &error3);
+                                        if (error3 != TOXAV_ERR_SEND_FRAME_OK)
+                                        {
+                                            fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d\n",
+                                                error3, out_samples, out_channels, out_sample_rate);
+                                        }
                                     }
                                 }
                             }
@@ -1609,6 +1596,10 @@ static void *thread_key_func(void *data)
             {
                 break;
             }
+            else if (ch == 'g')
+            {
+                break;
+            }
             else if (ch == 'b')
             {
                 break;
@@ -1647,13 +1638,23 @@ static void *thread_key_func(void *data)
             global_time_cur_ms = global_time_cur_ms + seek_delta_ms;
             global_time_old_mono_ts = current_time_monotonic_default2();
             global_need_video_seek = 1;
+            global_need_audio_seek = 1;
             printf("KK:-----SEEK >>-----\n");
+        }
+        else if (ch == 'g')
+        {
+            global_time_cur_ms = global_time_cur_ms + seek_delta_ms_faster;
+            global_time_old_mono_ts = current_time_monotonic_default2();
+            global_need_video_seek = 1;
+            global_need_audio_seek = 1;
+            printf("KK:-----SEEK2>>-----\n");
         }
         else if (ch == 'b')
         {
             global_time_cur_ms = global_time_cur_ms - seek_delta_ms;
             global_time_old_mono_ts = current_time_monotonic_default2();
             global_need_video_seek = 2;
+            global_need_audio_seek = 2;
             printf("KK:-----<< SEEK-----\n");
         }
         else if (ch == 'c')
