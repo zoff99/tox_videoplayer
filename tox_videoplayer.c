@@ -428,6 +428,15 @@ static void show_right_arrow()
         yuv_image[i] = 128;
     }
 
+    for (int y = 0; y < HEIGHT; y++) {
+        for (int x = 0; x < WIDTH; x++) {
+            if (x >= y && x <= y + 20) {
+                yuv_image[y * WIDTH + x] = 235;
+            }
+        }
+    }
+
+/*
     // Draw the right arrow on the image
     for (int y = 0; y < HEIGHT; y++) {
         for (int x = 0; x < WIDTH; x++) {
@@ -436,6 +445,7 @@ static void show_right_arrow()
             }
         }
     }
+*/
 
     bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
                 WIDTH, HEIGHT,
