@@ -1,3 +1,5 @@
 tox_videoplayer
 aa.mkv
 savedata.tox
+*.mp4
+*.mkv
