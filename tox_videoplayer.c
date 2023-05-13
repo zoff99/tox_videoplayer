@@ -78,8 +78,10 @@ static const char global_tox_vplayer_version_string[] = "0.99.2";
 // ----------- version -----------
 // ----------- version -----------
 
-#define DEFAULT_GLOBAL_AUD_BITRATE 32 // kbit/sec
+#define DEFAULT_GLOBAL_AUD_BITRATE 128 // kbit/sec
 #define DEFAULT_GLOBAL_VID_BITRATE 8000 // kbit/sec
+#define DEFAULT_SCREEN_CAPTURE_FPS "30" // 30 fps desktop screen capture
+#define DEFAULT_SCREEN_CAPTURE_PULSE_DEVICE "default" // default pulse device is called "default"
 
 static int self_online = 0;
 static int friend_online = 0;
@@ -99,16 +101,22 @@ static char *global_decoder_string = "";
 static char *global_encoder_string = "";
 static ToxAV *toxav = NULL;
 static const int global_friend_num = 0; // we always only use the first friend
+char *global_pulse_inputdevice_name = NULL;
+char *global_desktop_capture_fps = NULL;
+int global_osd_message_toggle = 0;
+int need_free_global_pulse_inputdevice_name = 0;
+int need_free_global_desktop_capture_fps = 0;
 AVRational time_base_audio = (AVRational) {0, 0};
 AVRational time_base_video = (AVRational) {0, 0};
 pthread_mutex_t time___mutex;
 #define PLAY_PAUSED 0
 #define PLAY_PLAYING 1
+static int global_need_video_seek = 0;
 static int global_play_status = PLAY_PAUSED;
 static int64_t global_pts = 0;
 int64_t global_time_cur_ms = 0;
 int64_t global_time_old_mono_ts = 0;
-const int seek_delta_ms = 10 * 1000; // seek X seconds
+const int seek_delta_ms = 30 * 1000; // seek X seconds
 
 
 struct Node1 {
@@ -172,8 +180,7 @@ static int64_t pts_to_ms(int64_t pts, AVRational time_base)
     return av_rescale_q(pts, time_base, AV_TIME_BASE_Q) / 1000;
 }
 
-
-
+// ############## FIFO ##############
 // ############## FIFO ##############
 
 typedef struct {
@@ -243,9 +250,8 @@ size_t fifo_buffer_read(fifo_buffer_t* buffer, void* data, size_t size) {
     return size;
 }
 
-
 // ############## FIFO ##############
-
+// ############## FIFO ##############
 
 static void tox_log_cb__custom(Tox *tox, TOX_LOG_LEVEL level, const char *file, uint32_t line, const char *func,
                         const char *message, void *user_data)
@@ -416,7 +422,6 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
     }
 }
 #endif
-
 
 /**
  *
@@ -803,35 +808,57 @@ static void flush_video(int age_ms)
     free(yuv_image);
 }
 
-static int seek_stream(AVFormatContext *format_ctx_seek, int stream_index, int seconds_to_seek, bool forward)
+static int seek_stream(AVFormatContext *format_ctx_seek, AVCodecContext *codec_context, int stream_index)
 {
-    int64_t timestamp = format_ctx_seek->streams[stream_index]->start_time;
-    while (timestamp < format_ctx_seek->streams[stream_index]->duration)
-    {
-        if (forward)
-        {
-            timestamp += seconds_to_seek * AV_TIME_BASE;
-            if (av_seek_frame(format_ctx_seek, stream_index, timestamp, AVSEEK_FLAG_ANY) < 0)
-            {
-                fprintf(stderr, "Error seeking forward\n");
-                return -1;
-            }
-        }
-        else
-        {
-            timestamp -= seconds_to_seek * AV_TIME_BASE;
-            if (timestamp < 0) {
-                timestamp = 0;
-            }
+    int64_t cur_pos;
+    pthread_mutex_lock(&time___mutex);
+    cur_pos = global_pts;
+    pthread_mutex_unlock(&time___mutex);
 
-            if (av_seek_frame(format_ctx_seek, stream_index, timestamp, AVSEEK_FLAG_ANY|AVSEEK_FLAG_BACKWARD) < 0)
-            {
-                fprintf(stderr, "Error seeking backward\n");
-                return -1;
-            }
+    int64_t timestamp = format_ctx_seek->streams[stream_index]->start_time;
+
+    // convert seconds provided by the user to a timestamp in a correct base,
+    // then save it for later.
+    int64_t m_target_ts = av_rescale_q(((cur_pos / 1000) + 0) * AV_TIME_BASE, AV_TIME_BASE_Q,
+        format_ctx_seek->streams[stream_index]->time_base);
+
+    printf("seek_stream:start time=%ld cur_pos=%ld sec_to_seek=%d m_target_ts=%ld\n",
+            timestamp, cur_pos, 0, m_target_ts);
+    // avcodec_flush_buffers(codec_context);
+
+    // Here we seek within given stream index and the correct timestamp 
+    // for that stream. Using AVSEEK_FLAG_BACKWARD to make sure we're 
+    // always *before* requested timestamp.
+    int err;
+    err = av_seek_frame(format_ctx_seek, stream_index, m_target_ts, AVSEEK_FLAG_BACKWARD);
+    fprintf(stderr, "Error seeking forward: %s\n", av_err2str(err));
+
+/*
+    if (forward)
+    {
+        cur_pos += ms_to_seek;
+        if (av_seek_frame(format_ctx_seek, stream_index, cur_pos, AVSEEK_FLAG_ANY) < 0)
+        {
+            fprintf(stderr, "Error seeking forward\n");
+            return -1;
         }
-        return 0;
     }
+    else
+    {
+        cur_pos -= ms_to_seek;
+        if (cur_pos < 0) {
+            cur_pos = 0;
+        }
+
+        if (av_seek_frame(format_ctx_seek, stream_index, cur_pos, AVSEEK_FLAG_BACKWARD) < 0)
+        {
+            fprintf(stderr, "Error seeking backward\n");
+            return -1;
+        }
+    }
+*/
+
+    return 0;
 }
 
 static void print_codec_parameters_audio(AVCodecParameters *codecpar, const char* text_prefix) {
@@ -926,12 +953,18 @@ static void *ffmpeg_thread_video_func(void *data)
         }
 
         fprintf(stderr, "Display Screen corrected: %dx%d\n", screen_width, screen_height);
+        char *capture_fps = DEFAULT_SCREEN_CAPTURE_FPS;
+        if (global_desktop_capture_fps != NULL)
+        {
+            capture_fps = global_desktop_capture_fps;
+        }
+        fprintf(stderr, "Display Screen capture FPS: %s\n", capture_fps);
 
         AVDictionary* options = NULL;
-        // Set some options
+        // set some options
         // grabbing frame rate
-        av_dict_set(&options, "framerate", "30", 0);
-        // Make the grabbed area follow the mouse
+        av_dict_set(&options, "framerate", capture_fps, 0);
+        // make the grabbed area follow the mouse
         // av_dict_set(&options,"follow_mouse","centered",0);
 
         const int resolution_string_len = 1000;
@@ -943,7 +976,7 @@ static void *ffmpeg_thread_video_func(void *data)
         av_dict_set(&options, "video_size", resolution_string, 0);
         AVInputFormat *ifmt = av_find_input_format("x11grab");
 
-        // Grab at position 10,20 ":0.0+10,20"
+        // example: grab at position 10,20 ":0.0+10,20"
         if (avformat_open_input(&format_ctx, ":0.0+0,0", ifmt, &options) != 0)
         {
             fprintf(stderr, "Could not open desktop as video input stream.\n");
@@ -1111,83 +1144,95 @@ static void *ffmpeg_thread_video_func(void *data)
                     int64_t pts = frame->pts;
                     int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
                     // printf("PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
-                    // fprintf(stderr, "TS: frame %ld %ld\n", ms, global_pts);
+                    fprintf(stderr, "TS: frame %ld %ld\n", ms, global_pts);
 
-                    if (labs(ms - global_pts) > 4000)
-                    {
-                        ms = global_pts;
-                        // printf("AA:timestamps broken, just play\n");
-                    }
+                    // HINT: check this again when no PTS is available!! -----------------
+                    //if (labs(ms - global_pts) > 4000)
+                    //{
+                    //    ms = global_pts;
+                    //    // printf("AA:timestamps broken, just play\n");
+                    //}
+                    // HINT: check this again when no PTS is available!! -----------------
 
-                    bool cond = (global_play_status == PLAY_PLAYING) && ((ms + (seek_delta_ms - 200)) < global_pts);
-                    if (cond)
+                    if (global_need_video_seek != 0)
                     {
-                        // skip frames, we are seeking forward most likely
+                        global_need_video_seek = 0;
                         av_frame_unref(frame);
-                        int seek_res = seek_stream(format_ctx, video_stream_index, (seek_delta_ms / 1000), true);
-                        fprintf(stderr, "SKIP frame %d %ld %ld\n", global_play_status, ms, global_pts);
-                        fprintf(stderr, "SKIP frame res:%d\n", seek_res);
+                        int seek_res = seek_stream(format_ctx, video_codec_ctx, video_stream_index);
+                        fprintf(stderr, "seek frame res:%d\n", seek_res);
                         show_seek_forward();
                     }
                     else
                     {
-                        while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
+                        bool cond = (global_play_status == PLAY_PLAYING) && ((ms + 500) < global_pts);
+                        if (cond)
                         {
-                            usleep(1000 * 4);
+                            // skip frames, we are seeking forward most likely
+                            av_frame_unref(frame);
+                            //int seek_res = seek_stream(format_ctx, video_codec_ctx, video_stream_index);
+                            fprintf(stderr, "SKIP frame %d %ld %ld\n", global_play_status, ms, global_pts);
+                            show_seek_forward();
                         }
-
-                        if (toxav != NULL)
+                        else
                         {
-                            if (global_play_status == PLAY_PLAYING)
+                            while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
                             {
-                                // fprintf(stderr, "frame h:%d %d\n", frame->height, output_height);
-                                uint32_t frame_age_ms = 0;
-                                TOXAV_ERR_SEND_FRAME error2;
-                                bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
-                                            planes_stride[0], output_height,
-                                            dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
-                                            &error2, frame_age_ms);
+                                usleep(1000 * 4);
+                            }
 
-                                if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+                            if (toxav != NULL)
+                            {
+                                if (global_play_status == PLAY_PLAYING)
                                 {
-                                    fprintf(stderr, "toxav_video_send_frame_age:%d %d\n", (int)ret2, error2);
+                                    // fprintf(stderr, "frame h:%d %d\n", frame->height, output_height);
+                                    uint32_t frame_age_ms = 0;
+                                    TOXAV_ERR_SEND_FRAME error2;
+                                    bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
+                                                planes_stride[0], output_height,
+                                                dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
+                                                &error2, frame_age_ms);
+
+                                    if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+                                    {
+                                        fprintf(stderr, "toxav_video_send_frame_age:%d %d\n", (int)ret2, error2);
+                                    }
+                                }
+                                else
+                                {
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
+                                    flush_video(-800);
                                 }
                             }
-                            else
-                            {
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                                flush_video(-800);
-                            }
+                            av_frame_unref(frame);
                         }
-                        av_frame_unref(frame);
                     }
                 }
             }
@@ -1239,7 +1284,16 @@ static void *ffmpeg_thread_audio_func(void *data)
         // av_dict_set(&options, "framerate", "30", 0);
         AVInputFormat *ifmt = av_find_input_format("pulse");
 
-        if (avformat_open_input(&format_ctx, "alsa_output.pci-0000_0a_00.3.iec958-stereo.monitor", ifmt, &options) != 0)
+        char *pulse_device_name = DEFAULT_SCREEN_CAPTURE_PULSE_DEVICE;
+        if (global_pulse_inputdevice_name != NULL)
+        {
+            pulse_device_name = global_pulse_inputdevice_name;
+        }
+
+        fprintf(stderr, "AA:using pluse audio device: %s\n", pulse_device_name);
+
+        // "alsa_output.pci-0000_0a_00.3.iec958-stereo.monitor"
+        if (avformat_open_input(&format_ctx, pulse_device_name, ifmt, &options) != 0)
         {
             fprintf(stderr, "AA:Could not open pluse audio device as audio input stream.\n");
             return NULL;
@@ -1522,7 +1576,6 @@ static void *thread_time_func(void *data)
     return NULL;
 }
 
-
 static void *thread_key_func(void *data)
 {
     struct termios oldt;
@@ -1593,10 +1646,14 @@ static void *thread_key_func(void *data)
         {
             global_time_cur_ms = global_time_cur_ms + seek_delta_ms;
             global_time_old_mono_ts = current_time_monotonic_default2();
+            global_need_video_seek = 1;
             printf("KK:-----SEEK >>-----\n");
         }
         else if (ch == 'b')
         {
+            global_time_cur_ms = global_time_cur_ms - seek_delta_ms;
+            global_time_old_mono_ts = current_time_monotonic_default2();
+            global_need_video_seek = 2;
             printf("KK:-----<< SEEK-----\n");
         }
         else if (ch == 'c')
@@ -1607,9 +1664,20 @@ static void *thread_key_func(void *data)
         else if (ch == 'o')
         {
             printf("KK:-----  OSD  -----\n");
-            const char *message_001 = ".osd 2";
-            uint32_t res_m = tox_friend_send_message(local_tox, 0, TOX_MESSAGE_TYPE_NORMAL, (uint8_t *)message_001, strlen(message_001), NULL);
-            printf("KK:OSD:send_message:res=%d\n", res_m);
+            if (global_osd_message_toggle == 0)
+            {
+                const char *message_001 = ".osd 2";
+                uint32_t res_m = tox_friend_send_message(local_tox, 0, TOX_MESSAGE_TYPE_NORMAL, (uint8_t *)message_001, strlen(message_001), NULL);
+                printf("KK:OSD:send_message:ON:res=%d\n", res_m);
+                global_osd_message_toggle = 1;
+            }
+            else
+            {
+                const char *message_001 = ".osd 0";
+                uint32_t res_m = tox_friend_send_message(local_tox, 0, TOX_MESSAGE_TYPE_NORMAL, (uint8_t *)message_001, strlen(message_001), NULL);
+                printf("KK:OSD:send_message:OFF:res=%d\n", res_m);
+                global_osd_message_toggle = 0;
+            }
         }
         else if (ch == 'h')
         {
@@ -1709,12 +1777,11 @@ static void *thread_key_func(void *data)
     return NULL;
 }
 
-
 int main(int argc, char *argv[])
 {
     char *input_file_arg_str = NULL;
     int opt;
-    const char     *short_opt = "hvti:";
+    const char     *short_opt = "hvti:p:f:";
     struct option   long_opt[] =
     {
         {"help",          no_argument,       NULL, 'h'},
@@ -1742,6 +1809,10 @@ int main(int argc, char *argv[])
                 printf("Usage: %s [OPTIONS]\n", argv[0]);
                 printf("  -t,                                  tcp only mode\n");
                 printf("  -i,                                  input filename or \"desktop\"\n");
+                printf("  -p,                                  on \"desktop\" use this as pulse input device");
+                printf("                                           otherwise  \"default\" is used");
+                printf("  -f,                                  on \"desktop\" use this as capture FPS");
+                printf("                                           otherwise  \"30\" is used");
                 printf("  -v, --version                        show version\n");
                 printf("  -h, --help                           print this help and exit\n");
                 printf("\n");
@@ -1749,6 +1820,26 @@ int main(int argc, char *argv[])
 
             case 'i':
                 input_file_arg_str = optarg;
+                break;
+
+            case 'f':
+                global_desktop_capture_fps = strdup(optarg);
+                if (global_desktop_capture_fps == NULL)
+                {
+                    fprintf(stderr, "Error copying capture fps string\n");
+                    return (-4);
+                }
+                need_free_global_desktop_capture_fps = 1;
+                break;
+
+            case 'p':
+                global_pulse_inputdevice_name = strdup(optarg);
+                if (global_pulse_inputdevice_name == NULL)
+                {
+                    fprintf(stderr, "Error copying pulse input device string\n");
+                    return (-3);
+                }
+                need_free_global_pulse_inputdevice_name = 1;
                 break;
 
             case ':':
@@ -2002,6 +2093,17 @@ int main(int argc, char *argv[])
     tox_utils_kill(tox);
     printf("killed Tox [TOXUTIL]\n");
 #endif
+
+    if (need_free_global_desktop_capture_fps == 1)
+    {
+        free(global_desktop_capture_fps);
+    }
+
+    if (need_free_global_pulse_inputdevice_name == 1)
+    {
+        free(global_pulse_inputdevice_name);
+    }
+
     printf("--END--\n");
 
     return 0;
