@@ -40,6 +40,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
+#include <unistd.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -72,6 +74,10 @@ static pthread_t ffmpeg_thread_video;
 static int ffmpeg_thread_video_stop = 1;
 static pthread_t ffmpeg_thread_audio;
 static int ffmpeg_thread_audio_stop = 1;
+static pthread_t thread_key;
+static int thread_key_stop = 1;
+static pthread_t thread_time;
+static int thread_time_stop = 1;
 static const char *savedata_filename = "./savedata.tox";
 static const char *savedata_tmp_filename = "./savedata.tox.tmp";
 static char *global_decoder_string = "";
@@ -80,6 +86,11 @@ static ToxAV *toxav = NULL;
 static const int global_friend_num = 0; // we always only use the first friend
 AVRational time_base_audio = (AVRational) {0, 0};
 AVRational time_base_video = (AVRational) {0, 0};
+pthread_mutex_t time___mutex;
+#define PLAY_PAUSED 0
+#define PLAY_PLAYING 1
+static int global_play_status = PLAY_PAUSED;
+static int64_t global_pts = 0;
 
 struct Node1 {
     char *ip;
@@ -394,7 +405,30 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
 }
 #endif
 
-static void *ffmpeg_thread_video_func(__attribute__((unused)) void *data)
+
+
+static int seek_backwards(AVFormatContext *format_ctx_seek, int stream_index)
+{
+    int64_t timestamp = format_ctx_seek->streams[stream_index]->start_time;
+    while (timestamp < format_ctx_seek->streams[stream_index]->duration)
+    {
+        timestamp -= 5 * AV_TIME_BASE;
+        if (timestamp < 0) {
+            timestamp = 0;
+        }
+
+        if (av_seek_frame(format_ctx_seek, stream_index, timestamp, AVSEEK_FLAG_BACKWARD) < 0)
+        {
+            printf("Error seeking in video file\n");
+            return -1;
+        }
+
+        return 0;
+    }
+}
+
+
+static void *ffmpeg_thread_video_func(void *data)
 {
     AVFormatContext *format_ctx = NULL;
     AVCodecContext *audio_codec_ctx = NULL;
@@ -409,8 +443,6 @@ static void *ffmpeg_thread_video_func(__attribute__((unused)) void *data)
     int num_samples;
     uint8_t **converted_samples = NULL;
     int ret;
-    int64_t cur_ms = 0;
-    uint64_t old_mono_ts = current_time_monotonic_default2();
 
     char *inputfile = (char *) data;
 
@@ -530,8 +562,13 @@ static void *ffmpeg_thread_video_func(__attribute__((unused)) void *data)
         yieldcpu(200);
     }
 
-    cur_ms = -1000; // give 1 seconds lag delay
-    old_mono_ts = current_time_monotonic_default2();
+    pthread_mutex_lock(&time___mutex);
+    if (global_play_status == PLAY_PAUSED)
+    {
+        global_play_status = PLAY_PLAYING;
+        fprintf(stderr, "start playing ...\n");
+    }
+    pthread_mutex_unlock(&time___mutex);
 
     while (ffmpeg_thread_video_stop != 1)
     {
@@ -572,21 +609,13 @@ static void *ffmpeg_thread_video_func(__attribute__((unused)) void *data)
                             dst_yuv_buffer, planes_stride);
 
                     int64_t pts = frame->pts;
-                    // fprintf(stderr, "VideoFrame:ls:%d %dx%d fn:%10d pts:%10ld pn:%10d\n",
-                    //             frame->linesize[0], frame->width, frame->height,
-                    //             video_codec_ctx->frame_number, pts, frame->coded_picture_number);
-
-                    cur_ms = cur_ms + (int64_t)(current_time_monotonic_default2() - old_mono_ts);
-                    old_mono_ts = current_time_monotonic_default2();
-
                     int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
                     // printf("PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
                     // printf("TS: %ld\n", cur_ms);
 
-                    if (ms > cur_ms)
+                    while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
                     {
-                        // printf("sleeping for %ld ms\n", (ms - cur_ms));
-                        usleep(1000 * (int)(ms - cur_ms));
+                        usleep(1000 * 4);
                     }
 
                     if (toxav != NULL)
@@ -628,7 +657,7 @@ static void *ffmpeg_thread_video_func(__attribute__((unused)) void *data)
 
 
 
-static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
+static void *ffmpeg_thread_audio_func(void *data)
 {
     AVFormatContext *format_ctx = NULL;
     AVCodecContext *audio_codec_ctx = NULL;
@@ -643,8 +672,6 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
     int num_samples;
     uint8_t **converted_samples = NULL;
     int ret;
-    int64_t cur_ms = 0;
-    uint64_t old_mono_ts = current_time_monotonic_default2();
     const int out_channels = 2; // keep in sync with `out_channel_layout`
     const int out_channel_layout = AV_CH_LAYOUT_STEREO; // AV_CH_LAYOUT_MONO or AV_CH_LAYOUT_STEREO;
     const int out_bytes_per_sample = 2; // 2 byte per PCM16 sample
@@ -760,9 +787,6 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
         yieldcpu(200);
     }
 
-    cur_ms = -1000; // give 1 seconds lag delay
-    old_mono_ts = current_time_monotonic_default2();
-
     uint8_t *buf = (uint8_t *)calloc(1, temp_audio_buf_sizes);
 
     while (ffmpeg_thread_audio_stop != 1)
@@ -803,20 +827,13 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
 
                     // Do something with the converted samples here
                     int64_t pts = frame->pts;
-                    // fprintf(stderr, "AudioFrame:fn:%10d pts:%10ld sr:%5d ch:%1d samples:%3d\n",
-                    //     audio_codec_ctx->frame_number, pts, frame->sample_rate, 2, num_samples);
-
-                    cur_ms = cur_ms + (int64_t)(current_time_monotonic_default2() - old_mono_ts);
-                    old_mono_ts = current_time_monotonic_default2();
-
                     int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
                     // printf("AA:PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
                     // printf("AA:TS: %ld\n", cur_ms);
 
-                    if (ms > cur_ms)
+                    while ((global_play_status == PLAY_PAUSED) || (ms > global_pts))
                     {
-                        // printf("AA:sleeping for %ld ms\n", (ms - cur_ms));
-                        usleep(1000 * (int)(ms - cur_ms));
+                        usleep(1000 * 4);
                     }
 
                     if (toxav != NULL)
@@ -859,7 +876,88 @@ static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
     return NULL;
 }
 
+static void *thread_time_func(void *data)
+{
+    pthread_mutex_lock(&time___mutex);
+    global_play_status = PLAY_PAUSED;
+    global_pts = 0;
+    pthread_mutex_unlock(&time___mutex);
 
+    int64_t cur_ms = 0;
+    int64_t old_mono_ts = current_time_monotonic_default2();
+    int first_start = 1;
+
+    while (thread_time_stop != 1)
+    {
+        yieldcpu(4);
+        pthread_mutex_lock(&time___mutex);
+        if (global_play_status == PLAY_PLAYING)
+        {
+            if (first_start == 1)
+            {
+                first_start = 0;
+                cur_ms = 0;
+                global_pts = 0;
+                old_mono_ts = current_time_monotonic_default2();
+            }
+            cur_ms = cur_ms + (int64_t)(current_time_monotonic_default2() - old_mono_ts);
+            old_mono_ts = current_time_monotonic_default2();
+            global_pts = cur_ms;
+            // printf("TT:pts_ms=%ld\n", global_pts);
+        }
+        else
+        {
+            old_mono_ts = current_time_monotonic_default2();
+        }
+        pthread_mutex_unlock(&time___mutex);
+    }
+
+    printf("Key Time:Clean thread exit!\n");
+    return NULL;
+}
+
+
+static void *thread_key_func(void *data)
+{
+    struct termios oldt;
+    struct termios newt;
+    int ch;
+
+    while (thread_key_stop != 1)
+    {
+        /* Get the terminal settings */
+        tcgetattr(STDIN_FILENO, &oldt);
+        newt = oldt;
+
+        /* Disable canonical mode and echo */
+        newt.c_lflag &= ~(ICANON | ECHO);
+
+        /* Set the new terminal settings */
+        tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+
+        /* Wait for a keypress */
+        while ((ch = getchar()) != ' ') {}
+
+        pthread_mutex_lock(&time___mutex);
+        if (global_play_status == PLAY_PAUSED)
+        {
+            global_play_status = PLAY_PLAYING;
+            printf("KK:----- PLAY  -----\n");
+        }
+        else if (global_play_status == PLAY_PLAYING)
+        {
+            global_play_status = PLAY_PAUSED;
+            printf("KK:----- PAUSE -----\n");
+        }
+        pthread_mutex_unlock(&time___mutex);
+
+    }
+    /* Restore the old terminal settings */
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+
+    printf("Key Thread:Clean thread exit!\n");
+    return NULL;
+}
 
 
 int main(int argc, char *argv[])
@@ -874,7 +972,14 @@ int main(int argc, char *argv[])
 
     av_register_all();
 
+    if (pthread_mutex_init(&time___mutex, NULL) != 0)
+    {
+        fprintf(stderr, "Creating mutex failed\n");
+        return 0;
+    }
 
+    global_play_status = PLAY_PAUSED;
+    global_pts = 0;
 
     struct Tox_Options options;
     tox_options_default(&options);
@@ -1023,6 +1128,29 @@ int main(int argc, char *argv[])
         printf("ffmpeg Audio Thread successfully created\n");
     }
 
+    thread_time_stop = 0;
+    if (pthread_create(&thread_time, NULL, thread_time_func, (void *)argv[1]) != 0)
+    {
+        printf("Time Thread create failed\n");
+    }
+    else
+    {
+        pthread_setname_np(thread_time, "t_time");
+        printf("Time Thread successfully created\n");
+    }
+
+    thread_key_stop = 0;
+    if (pthread_create(&thread_key, NULL, thread_key_func, (void *)argv[1]) != 0)
+    {
+        printf("Key Thread create failed\n");
+    }
+    else
+    {
+        pthread_setname_np(thread_key, "t_key");
+        printf("Key Thread successfully created\n");
+    }
+
+
     // ----------- main loop -----------
     while (1 == 1)
     {
@@ -1034,11 +1162,19 @@ int main(int argc, char *argv[])
     // ----------- main loop -----------
 
     // Clean up
+    thread_key_stop = 1;
+    pthread_join(thread_key, NULL);
+
     ffmpeg_thread_audio_stop = 1;
     pthread_join(ffmpeg_thread_audio, NULL);
 
     ffmpeg_thread_video_stop = 1;
     pthread_join(ffmpeg_thread_video, NULL);
+
+    thread_time_stop = 1;
+    pthread_join(thread_time, NULL);
+
+    pthread_mutex_destroy(&time___mutex);
 
     toxav_kill(toxav);
     printf("killed ToxAV\n");
