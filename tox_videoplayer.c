@@ -68,13 +68,16 @@
 static int self_online = 0;
 static int friend_online = 0;
 static int friend_in_call = 0;
-static pthread_t ffmpeg_thread;
-static int ffmpeg_thread_stop = 1;
+static pthread_t ffmpeg_thread_video;
+static int ffmpeg_thread_video_stop = 1;
+static pthread_t ffmpeg_thread_audio;
+static int ffmpeg_thread_audio_stop = 1;
 static const char *savedata_filename = "./savedata.tox";
 static const char *savedata_tmp_filename = "./savedata.tox.tmp";
 static char *global_decoder_string = "";
 static char *global_encoder_string = "";
 static ToxAV *toxav = NULL;
+static const int global_friend_num = 0; // we always only use the first friend
 AVRational time_base_audio = (AVRational) {0, 0};
 AVRational time_base_video = (AVRational) {0, 0};
 
@@ -297,7 +300,7 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
 }
 #endif
 
-static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
+static void *ffmpeg_thread_video_func(__attribute__((unused)) void *data)
 {
     AVFormatContext *format_ctx = NULL;
     AVCodecContext *audio_codec_ctx = NULL;
@@ -397,20 +400,6 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
         return NULL; // AVERROR(ENOMEM);
     }
 
-    swr_ctx = swr_alloc_set_opts(NULL,
-                                 AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16, audio_codec_ctx->sample_rate,
-                                 audio_codec_ctx->channel_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate,
-                                 0, NULL);
-    if (!swr_ctx) {
-        fprintf(stderr, "Could not allocate resampler context\n");
-        return NULL; // 1;
-    }
-
-    if (swr_init(swr_ctx) < 0) {
-        fprintf(stderr, "Could not initialize resampler context\n");
-        return NULL; // 1;
-    }
-
     // Allocate a buffer for the YUV data
     uint8_t *yuv_buffer = (uint8_t *)av_malloc(av_image_get_buffer_size(AV_PIX_FMT_YUV420P,
             video_codec_ctx->width, video_codec_ctx->height, 1));
@@ -450,48 +439,12 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
     cur_ms = -1000; // give 1 seconds lag delay
     old_mono_ts = current_time_monotonic_default2();
 
-    while (ffmpeg_thread_stop != 1)
+    while (ffmpeg_thread_video_stop != 1)
     {
         // Read packets from the input file and decode them        
-        while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
+        while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_video_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
         {
-            if (packet.stream_index == audio_stream_index)
-            {
-                // Decode audio packet
-                ret = avcodec_send_packet(audio_codec_ctx, &packet);
-                if (ret < 0)
-                {
-                    fprintf(stderr, "Error sending audio packet for decoding\n");
-                    break;
-                }
-
-                while (ret >= 0)
-                {
-                   ret = avcodec_receive_frame(audio_codec_ctx, frame);
-                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                    {
-                        break;
-                    }
-                    else if (ret < 0)
-                    {
-                        fprintf(stderr, "Error during audio decoding\n");
-                        break;
-                    }
-
-                    num_samples = swr_get_out_samples(swr_ctx, frame->nb_samples);
-                    av_samples_alloc_array_and_samples(&converted_samples, NULL, 2, num_samples, AV_SAMPLE_FMT_S16, 0);
-                    swr_convert(swr_ctx, converted_samples, num_samples, (const uint8_t **)frame->extended_data, frame->nb_samples);
-
-                    // Do something with the converted samples here
-                    int64_t pts = frame->pts;
-                    // fprintf(stderr, "AudioFrame:fn:%10d pts:%10ld sr:%5d ch:%1d samples:%3d\n",
-                    //     audio_codec_ctx->frame_number, pts, frame->sample_rate, 2, num_samples);
-
-                    av_freep(&converted_samples[0]);
-                    av_freep(&converted_samples);
-                }
-            }
-            else if (packet.stream_index == video_stream_index)
+            if (packet.stream_index == video_stream_index)
             {
                 // Decode video packet
                 ret = avcodec_send_packet(video_codec_ctx, &packet);
@@ -533,12 +486,12 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
                     old_mono_ts = current_time_monotonic_default2();
 
                     int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
-                    printf("PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
-                    printf("TS: %ld\n", cur_ms);
+                    // printf("PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
+                    // printf("TS: %ld\n", cur_ms);
 
                     if (ms > cur_ms)
                     {
-                        printf("sleeping for %ld ms\n", (ms - cur_ms));
+                        // printf("sleeping for %ld ms\n", (ms - cur_ms));
                         usleep(1000 * (int)(ms - cur_ms));
                     }
 
@@ -546,7 +499,7 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
                     {
                         uint32_t frame_age_ms = 0;
                         TOXAV_ERR_SEND_FRAME error2;
-                        bool ret2 = toxav_video_send_frame_age(toxav, 0,
+                        bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
                                     planes_stride[0], frame->height,
                                     dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
                                     &error2, frame_age_ms);
@@ -561,7 +514,7 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
             av_packet_unref(&packet);
         }
 
-        if (ffmpeg_thread_stop != 1)
+        if (ffmpeg_thread_video_stop != 1)
         {
             // fprintf(stderr, "waiting for friend ...\n");
             yieldcpu(400);
@@ -574,12 +527,238 @@ static void *ffmpeg_thread_func(__attribute__((unused)) void *data)
     avcodec_free_context(&video_codec_ctx);
     avformat_close_input(&format_ctx);
     av_free(yuv_buffer);
-    swr_free(&swr_ctx);
-    sws_freeContext(scaler_ctx);
 
-    printf("ffmpeg Thread:Clean thread exit!\n");
+    printf("ffmpeg Video Thread:Clean thread exit!\n");
     return NULL;
 }
+
+
+
+static void *ffmpeg_thread_audio_func(__attribute__((unused)) void *data)
+{
+    AVFormatContext *format_ctx = NULL;
+    AVCodecContext *audio_codec_ctx = NULL;
+    AVCodecContext *video_codec_ctx = NULL;
+    SwrContext *swr_ctx = NULL;
+    AVCodec *audio_codec = NULL;
+    AVCodec *video_codec = NULL;
+    AVPacket packet;
+    AVFrame *frame = NULL;
+    int audio_stream_index = -1;
+    int video_stream_index = -1;
+    int num_samples;
+    uint8_t **converted_samples = NULL;
+    int ret;
+    int64_t cur_ms = 0;
+    uint64_t old_mono_ts = current_time_monotonic_default2();
+
+    char *inputfile = (char *) data;
+
+    // Open the input file
+    if ((ret = avformat_open_input(&format_ctx, inputfile, NULL, NULL)) < 0) {
+        fprintf(stderr, "AA:Could not open input file '%s'\n", inputfile);
+        return NULL; // ret;
+    }
+
+    // Retrieve stream information
+    if ((ret = avformat_find_stream_info(format_ctx, NULL)) < 0) {
+        fprintf(stderr, "AA:Could not find stream information\n");
+        return NULL; // ret;
+    }
+
+    // Find the audio and video streams
+    for (int i = 0; i < format_ctx->nb_streams; i++)
+    {
+        AVCodecParameters *codec_params = format_ctx->streams[i]->codecpar;
+        AVCodec *codec = avcodec_find_decoder(codec_params->codec_id);
+        if (!codec)
+        {
+            fprintf(stderr, "AA:Unsupported codec!\n");
+            continue;
+        }
+        if (codec_params->codec_type == AVMEDIA_TYPE_AUDIO && audio_stream_index < 0)
+        {
+            audio_codec_ctx = avcodec_alloc_context3(codec);
+            if (!audio_codec_ctx)
+            {
+                fprintf(stderr, "AA:Could not allocate audio codec context\n");
+                return NULL; // AVERROR(ENOMEM);
+            }
+            if ((ret = avcodec_parameters_to_context(audio_codec_ctx, codec_params)) < 0)
+            {
+                fprintf(stderr, "AA:Could not copy audio codec parameters to context\n");
+                return NULL; // ret;
+            }
+            if ((ret = avcodec_open2(audio_codec_ctx, codec, NULL)) < 0)
+            {
+                fprintf(stderr, "AA:Could not open audio codec\n");
+                return NULL; // ret;
+            }
+            audio_stream_index = i;
+            audio_codec = codec;
+
+            time_base_audio = format_ctx->streams[i]->time_base;
+        }
+        else if (codec_params->codec_type == AVMEDIA_TYPE_VIDEO && video_stream_index < 0)
+        {
+            video_codec_ctx = avcodec_alloc_context3(codec);
+            if (!video_codec_ctx) {
+                fprintf(stderr, "AA:Could not allocate video codec context\n");
+                return NULL; // AVERROR(ENOMEM);
+            }
+            if ((ret = avcodec_parameters_to_context(video_codec_ctx, codec_params)) < 0) {
+                fprintf(stderr, "AA:Could not copy video codec parameters to context\n");
+                return NULL; // ret;
+            }
+            if ((ret = avcodec_open2(video_codec_ctx, codec, NULL)) < 0) {
+                fprintf(stderr, "AA:Could not open video codec\n");
+                return NULL; // ret;
+            }
+            video_stream_index = i;
+            video_codec = codec;
+
+            time_base_video = format_ctx->streams[i]->time_base;
+        }
+    }
+
+    // Make sure we found both audio and video streams
+    if (audio_stream_index < 0 || video_stream_index < 0) {
+        fprintf(stderr, "AA:Could not find audio and video streams\n");
+        return NULL; // AVERROR_EXIT;
+    }
+
+    // Allocate a frame for decoding
+    frame = av_frame_alloc();
+    if (!frame) {
+        fprintf(stderr, "AA:Could not allocate frame\n");
+        return NULL; // AVERROR(ENOMEM);
+    }
+
+    swr_ctx = swr_alloc_set_opts(NULL,
+                                 AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16, audio_codec_ctx->sample_rate,
+                                 audio_codec_ctx->channel_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate,
+                                 0, NULL);
+    if (!swr_ctx) {
+        fprintf(stderr, "AA:Could not allocate resampler context\n");
+        return NULL; // 1;
+    }
+
+    if (swr_init(swr_ctx) < 0) {
+        fprintf(stderr, "AA:Could not initialize resampler context\n");
+        return NULL; // 1;
+    }
+
+    // Wait for friend to come online
+    while (friend_online == 0)
+    {
+        yieldcpu(200);
+    }
+
+    while (friend_in_call != 1)
+    {
+        yieldcpu(200);
+    }
+
+    cur_ms = -1000; // give 1 seconds lag delay
+    old_mono_ts = current_time_monotonic_default2();
+
+    while (ffmpeg_thread_audio_stop != 1)
+    {
+        // Read packets from the input file and decode them        
+        while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_audio_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
+        {
+            if (packet.stream_index == audio_stream_index)
+            {
+                // Decode audio packet
+                ret = avcodec_send_packet(audio_codec_ctx, &packet);
+                if (ret < 0)
+                {
+                    fprintf(stderr, "AA:Error sending audio packet for decoding\n");
+                    break;
+                }
+
+                while (ret >= 0)
+                {
+                    ret = avcodec_receive_frame(audio_codec_ctx, frame);
+                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+                    {
+                        break;
+                    }
+                    else if (ret < 0)
+                    {
+                        fprintf(stderr, "AA:Error during audio decoding\n");
+                        break;
+                    }
+
+                    const int out_channels = 2;
+                    num_samples = swr_get_out_samples(swr_ctx, frame->nb_samples);
+                    av_samples_alloc_array_and_samples(&converted_samples, NULL, out_channels, num_samples, AV_SAMPLE_FMT_S16, 0);
+                    swr_convert(swr_ctx, converted_samples, num_samples, (const uint8_t **)frame->extended_data, frame->nb_samples);
+
+                    // Do something with the converted samples here
+                    int64_t pts = frame->pts;
+                    // fprintf(stderr, "AudioFrame:fn:%10d pts:%10ld sr:%5d ch:%1d samples:%3d\n",
+                    //     audio_codec_ctx->frame_number, pts, frame->sample_rate, 2, num_samples);
+
+                    cur_ms = cur_ms + (int64_t)(current_time_monotonic_default2() - old_mono_ts);
+                    old_mono_ts = current_time_monotonic_default2();
+
+                    int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
+                    printf("AA:PTS: %ld, Time Base: %d/%d, Milliseconds: %ld\n", pts, time_base_video.num, time_base_video.den, ms);
+                    printf("AA:TS: %ld\n", cur_ms);
+
+                    if (ms > cur_ms)
+                    {
+                        printf("AA:sleeping for %ld ms\n", (ms - cur_ms));
+                        usleep(1000 * (int)(ms - cur_ms));
+                    }
+
+                    if (toxav != NULL)
+                    {
+                        const float samples_ms = (float)num_samples / ((float)(frame->sample_rate) / 1000.0f);
+                        const int samples_ms_loops = (int)(samples_ms / 8.0f);
+                        const int samples_per_loop = num_samples / samples_ms_loops;
+                        int16_t *buf = (int16_t *)converted_samples[0];
+                        for (int j=0;j<samples_ms_loops;j++)
+                        {
+                            Toxav_Err_Send_Frame error3;
+                            toxav_audio_send_frame(toxav, global_friend_num, buf, 240,
+                                        out_channels, frame->sample_rate, &error3);
+                            buf = buf + samples_per_loop;
+                        }
+                        // if (error3 != TOXAV_ERR_SEND_FRAME_OK)
+                        {
+                            printf("AA:toxav_audio_send_frame: samples:%d ch:%d sr:%d ms:%f loops:%d spl:%d\n",
+                                    num_samples, out_channels, frame->sample_rate, samples_ms,
+                                    samples_ms_loops, samples_per_loop);
+                        }
+                    }
+
+                    av_freep(&converted_samples[0]);
+                    av_freep(&converted_samples);
+                }
+            }
+            av_packet_unref(&packet);
+        }
+
+        if (ffmpeg_thread_audio_stop != 1)
+        {
+            // fprintf(stderr, "waiting for friend ...\n");
+            yieldcpu(400);
+        }
+    }
+
+    // Clean up
+    av_frame_free(&frame);
+    avcodec_free_context(&audio_codec_ctx);
+    avcodec_free_context(&video_codec_ctx);
+    avformat_close_input(&format_ctx);
+    swr_free(&swr_ctx);
+
+    printf("ffmpeg Audio Thread:Clean thread exit!\n");
+    return NULL;
+}
+
 
 
 
@@ -721,17 +900,28 @@ int main(int argc, char *argv[])
 
 
 
-    ffmpeg_thread_stop = 0;
-    if (pthread_create(&ffmpeg_thread, NULL, ffmpeg_thread_func, (void *)argv[1]) != 0)
+    ffmpeg_thread_video_stop = 0;
+    if (pthread_create(&ffmpeg_thread_video, NULL, ffmpeg_thread_video_func, (void *)argv[1]) != 0)
     {
-        printf("ffmpeg Thread create failed\n");
+        printf("ffmpeg Video Thread create failed\n");
     }
     else
     {
-        pthread_setname_np(ffmpeg_thread, "t_ffmpeg");
-        printf("ffmpeg Thread successfully created\n");
+        pthread_setname_np(ffmpeg_thread_video, "t_ffmpeg_v");
+        printf("ffmpeg Video Thread successfully created\n");
     }
 
+
+    ffmpeg_thread_audio_stop = 0;
+    if (pthread_create(&ffmpeg_thread_audio, NULL, ffmpeg_thread_audio_func, (void *)argv[1]) != 0)
+    {
+        printf("ffmpeg Audio Thread create failed\n");
+    }
+    else
+    {
+        pthread_setname_np(ffmpeg_thread_audio, "t_ffmpeg_a");
+        printf("ffmpeg Audio Thread successfully created\n");
+    }
 
     // ----------- main loop -----------
     while (1 == 1)
@@ -744,8 +934,11 @@ int main(int argc, char *argv[])
     // ----------- main loop -----------
 
     // Clean up
-    ffmpeg_thread = 1;
-    pthread_join(ffmpeg_thread, NULL);
+    ffmpeg_thread_audio_stop = 1;
+    pthread_join(ffmpeg_thread_audio, NULL);
+
+    ffmpeg_thread_video_stop = 1;
+    pthread_join(ffmpeg_thread_video, NULL);
 
     toxav_kill(toxav);
     printf("killed ToxAV\n");
