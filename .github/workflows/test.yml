@@ -23,8 +23,12 @@ jobs:
           libavutil-dev \
           libavcodec-dev \
           libavformat-dev \
+          libavdevice-dev \
           libavfilter-dev \
+          libswresample-dev \
+          libswscale-dev \
           libx264-dev \
+          libx11-dev \
           libasan4
 
       - name: compile binary
