@@ -33,7 +33,7 @@ jobs:
 
       - name: compile binary
         run: |
-          time gcc -O3 -g -fPIC tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
+          gcc -O3 -g -fPIC tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
 
       - name: check binary
         run: |
