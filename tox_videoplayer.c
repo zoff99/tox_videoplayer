@@ -3,7 +3,7 @@
  * tox_videoplayer
  * (C)Zoff <zoff@zoff.cc> in 2023
  *
- * https://github.com/zoff99/__________
+ * https://github.com/zoff99/tox_videoplayer
  *
  *
  */
