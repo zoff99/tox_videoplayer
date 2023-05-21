@@ -1,0 +1,42 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  amalgamation_test:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v3
+      - name: install dependencies
+        run: |
+          sudo apt-get update && \
+          sudo DEBIAN_FRONTEND=noninteractive \
+          apt-get install -y --no-install-recommends \
+          ca-certificates \
+          libconfig-dev \
+          libopus-dev \
+          libsodium-dev \
+          libvpx-dev \
+          pkg-config \
+          libavutil-dev \
+          libavcodec-dev \
+          libavformat-dev \
+          libavfilter-dev \
+          libx264-dev \
+          libasan4
+
+      - name: compile binary
+        run: |
+          time gcc -O3 -g -fPIC tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
+
+      - name: check binary
+        run: |
+          ldd tox_videoplayer
+          ls -al tox_videoplayer
+          ls -hal tox_videoplayer
+
+      - name: Run the test
+        run: |
+          ./tox_videoplayer -v
