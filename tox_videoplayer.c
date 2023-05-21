@@ -1951,7 +1951,9 @@ int main(int argc, char *argv[])
 
     fprintf(stderr, "input file: %s\n", input_file_arg_str);
 
+#if (LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(58,9,100))
     av_register_all();
+#endif
     avformat_network_init();
     avdevice_register_all();
 
