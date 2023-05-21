@@ -30,11 +30,14 @@
  * 
  */
 
-#define _GNU_SOURCE
+#define _GNU_SOURCE // NOLINT(bugprone-reserved-identifier)
+#define _FILE_OFFSET_BITS 64 // NOLINT(bugprone-reserved-identifier)
+#define _LARGEFILE_SOURCE // NOLINT(bugprone-reserved-identifier)
 
 #include <ctype.h>
 #include <getopt.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,6 +67,9 @@
 // include toxcore amalgamation with ToxAV --------
 #include "toxcore_amalgamation.c"
 // include toxcore amalgamation with ToxAV --------
+
+
+#include "shell_percentage_meter.h"
 
 
 // ----------- version -----------
@@ -102,6 +108,7 @@ static const int global_friend_num = 0; // we always only use the first friend
 char *global_pulse_inputdevice_name = NULL;
 char *global_desktop_capture_fps = NULL;
 int global_osd_message_toggle = 0;
+static bool main_loop_running;
 int need_free_global_pulse_inputdevice_name = 0;
 int need_free_global_desktop_capture_fps = 0;
 AVRational time_base_audio = (AVRational) {0, 0};
@@ -120,6 +127,8 @@ int64_t global_time_cur_ms = 0;
 int64_t global_time_old_mono_ts = 0;
 const int seek_delta_ms = 30 * 1000; // seek X seconds
 const int seek_delta_ms_faster = 5 * 60 * 1000; // seek X minutes
+struct termios oldt;
+struct termios newt;
 
 
 struct Node1 {
@@ -585,7 +594,6 @@ static char *get_bitmap_from_font(int font_char_num)
 #if 0
     else if ((font_char_num >= 0xA0) && (font_char_num <= 0xFF))
     {
-        // dbg(9, "UTF8 ext:%d:%d\n", (int)font_char_num, (int)(font_char_num - 0xA0));
         ret_bitmap = font8x8_ext_latin[font_char_num - 0xA0];
     }
 
@@ -746,7 +754,7 @@ static void show_pause(int age_ms)
                 &error2, age_ms);
     if (error2 != TOXAV_ERR_SEND_FRAME_OK)
     {
-        fprintf(stderr, "show_pause:%d %d\n", (int)ret2, error2);
+        // fprintf(stderr, "show_pause:%d %d\n", (int)ret2, error2);
     }
 
     // Free the memory allocated for the YUV image buffer
@@ -908,6 +916,7 @@ static void *ffmpeg_thread_video_func(void *data)
     AVFrame *frame = NULL;
     int video_stream_index = -1;
     int64_t video_start_time = 0;
+    int64_t video_duration = 0;
     int num_samples;
     int output_width = 0;
     int output_height = 0;
@@ -1092,12 +1101,12 @@ static void *ffmpeg_thread_video_func(void *data)
     fprintf(stderr, "SwsContext: %dx%d -> %dx%d\n", video_codec_ctx->width, video_codec_ctx->height, output_width, output_height);
 
     // Wait for friend to come online
-    while (friend_online == 0)
+    while ((friend_online == 0) && (main_loop_running))
     {
         yieldcpu(200);
     }
 
-    while (friend_in_call != 1)
+    while ((friend_in_call != 1) && (main_loop_running))
     {
         yieldcpu(200);
     }
@@ -1115,8 +1124,17 @@ static void *ffmpeg_thread_video_func(void *data)
         video_start_time = pts_to_ms(format_ctx->streams[video_stream_index]->start_time, time_base_video);
     }
     fprintf(stderr, "stream start time: %ld\n", video_start_time);
+    if (format_ctx->streams[video_stream_index]->duration > 0)
+    {
+        video_duration = pts_to_ms(format_ctx->streams[video_stream_index]->duration, time_base_video);
+    }
+    else if (format_ctx->duration > 0)
+    {
+        video_duration = pts_to_ms(format_ctx->duration, time_base_video);
+    }
+    fprintf(stderr, "stream duration: %ld %ld\n", video_duration, format_ctx->duration);
 
-    while (ffmpeg_thread_video_stop != 1)
+    while ((ffmpeg_thread_video_stop != 1) && (main_loop_running))
     {
         // Read packets from the input file and decode them        
         while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_video_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
@@ -1406,12 +1424,12 @@ static void *ffmpeg_thread_audio_func(void *data)
 
 
     // Wait for friend to come online
-    while (friend_online == 0)
+    while ((friend_online == 0) && (main_loop_running))
     {
         yieldcpu(200);
     }
 
-    while (friend_in_call != 1)
+    while ((friend_in_call != 1) && (main_loop_running))
     {
         yieldcpu(200);
     }
@@ -1434,7 +1452,7 @@ static void *ffmpeg_thread_audio_func(void *data)
     }
     fprintf(stderr, "AA:stream start time: %ld\n", audio_start_time);
 
-    while (ffmpeg_thread_audio_stop != 1)
+    while ((ffmpeg_thread_audio_stop != 1) && (main_loop_running))
     {
         // Read packets from the input file and decode them        
         while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_audio_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
@@ -1580,7 +1598,7 @@ static void *thread_time_func(void *data)
     global_time_old_mono_ts = current_time_monotonic_default2();
     int first_start = 1;
 
-    while (thread_time_stop != 1)
+    while ((thread_time_stop != 1) && (main_loop_running))
     {
         yieldcpu(4);
         pthread_mutex_lock(&time___mutex);
@@ -1608,31 +1626,48 @@ static void *thread_time_func(void *data)
     return NULL;
 }
 
+static void change_term()
+{
+    printf("change_term\n");
+    /* Get the terminal settings */
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    /* Disable canonical mode and echo */
+    newt.c_lflag &= ~(ICANON | ECHO);
+    /* Set the new terminal settings */
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+}
+
+static void restore_term()
+{
+    printf("restore_term\n");
+    /* Restore the old terminal settings */
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+}
+
+static void draw_percent_bar(int percent, bool blocked)
+{
+    __shell_percentage__draw_progress_bar(percent, blocked);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    printf("%s", __shell_percentage__RESTORE_FG);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+}
+
 static void *thread_key_func(void *data)
 {
-    struct termios oldt;
-    struct termios newt;
     int ch;
     bool show_pause_text = false;
 
     Tox *local_tox = (Tox *)data;
 
-    while (thread_key_stop != 1)
+    while ((thread_key_stop != 1) && (main_loop_running))
     {
-        /* Get the terminal settings */
-        tcgetattr(STDIN_FILENO, &oldt);
-        newt = oldt;
-
-        /* Disable canonical mode and echo */
-        newt.c_lflag &= ~(ICANON | ECHO);
-
-        /* Set the new terminal settings */
-        tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-
         /* Wait for a keypress */
-        while (1 == 1)
+        while ((1 == 1) && (main_loop_running))
         {
+            printf("KK:getchar()\n");
             ch = getchar();
+            printf("KK:getchar() DONE\n");
             if (ch == ' ')
             {
                 break;
@@ -1855,15 +1890,27 @@ static void *thread_key_func(void *data)
             }
         }
     }
-    /* Restore the old terminal settings */
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
 
     printf("Key Thread:Clean thread exit!\n");
     return NULL;
 }
 
+// signal handlers --------------------------------------------------
+void INThandler(int sig)
+{
+    __shell_percentage__destroy_scroll_area();
+    restore_term();
+    signal(sig, SIG_IGN);
+    printf("_\n");
+    printf("INT signal\n");
+    main_loop_running = false;
+}
+// signal handlers --------------------------------------------------
+
 int main(int argc, char *argv[])
 {
+    main_loop_running = true;
+
     char *input_file_arg_str = NULL;
     int opt;
     const char     *short_opt = "hvti:p:f:";
@@ -2017,6 +2064,8 @@ int main(int argc, char *argv[])
     friend_online = 0;
     friend_in_call = 0;
 
+    change_term();
+
 #ifndef TOX_HAVE_TOXUTIL
     printf("init Tox\n");
     Tox *tox = tox_new(&options, NULL);
@@ -2083,10 +2132,23 @@ int main(int argc, char *argv[])
     printf("--------------------\n");
     printf("--------------------\n");
 
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(struct sigaction));
+    sa.sa_handler = INThandler;
+    sa.sa_flags = 0;// not SA_RESTART!;
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    // signal(SIGINT, INThandler);
+
+    __shell_percentage__setup_scroll_area();
+
+    draw_percent_bar(99, true);
+
     tox_iterate(tox, NULL);
     toxav_iterate(toxav);
     // ----------- wait for Tox to come online -----------
-    while (1 == 1)
+    while (main_loop_running)
     {
         tox_iterate(tox, NULL);
         yieldcpu(tox_iteration_interval(tox));
@@ -2097,8 +2159,6 @@ int main(int argc, char *argv[])
     }
     printf("Tox online\n");
     // ----------- wait for Tox to come online -----------
-
-
 
     ffmpeg_thread_video_stop = 0;
     if (pthread_create(&ffmpeg_thread_video, NULL, ffmpeg_thread_video_func, (void *)input_file_arg_str) != 0)
@@ -2147,7 +2207,7 @@ int main(int argc, char *argv[])
 
 
     // ----------- main loop -----------
-    while (1 == 1)
+    while (main_loop_running)
     {
         toxav_iterate(toxav);
         yieldcpu(2);
@@ -2158,6 +2218,10 @@ int main(int argc, char *argv[])
 
     // Clean up
     thread_key_stop = 1;
+    setvbuf(stdin, NULL, _IONBF, 0);
+    fprintf(stdin, "\n");
+    fprintf(stdin, "%c", EOF);
+    fclose(stdin);
     pthread_join(thread_key, NULL);
 
     ffmpeg_thread_audio_stop = 1;
@@ -2190,6 +2254,12 @@ int main(int argc, char *argv[])
     {
         free(global_pulse_inputdevice_name);
     }
+
+    restore_term();
+    __shell_percentage__destroy_scroll_area();
+    setvbuf(stdout, NULL, _IONBF, 0);
+    printf("\n");
+    setvbuf(stdout, NULL, _IOLBF, 0);
 
     printf("--END--\n");
 
