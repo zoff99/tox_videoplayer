@@ -2085,7 +2085,7 @@ int main(int argc, char *argv[])
 
     char *input_file_arg_str = NULL;
     int opt;
-    const char     *short_opt = "hvTti:p:f:x";
+    const char     *short_opt = "bhvTti:p:f:x";
     struct option   long_opt[] =
     {
         {"help",          no_argument,       NULL, 'h'},
