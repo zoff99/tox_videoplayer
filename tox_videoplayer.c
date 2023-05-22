@@ -91,6 +91,9 @@ static int self_online = 0;
 static int friend_online = 0;
 static int friend_in_call = 0;
 static int switch_tcponly = 0;
+static bool show_progress_bar = false;
+#define PROXY_PORT_TOR_DEFAULT 9050
+static int use_tor = 0;
 static pthread_t ffmpeg_thread_video;
 static int ffmpeg_thread_video_stop = 1;
 static pthread_t ffmpeg_thread_audio;
@@ -269,10 +272,13 @@ static void restore_term()
 
 static void draw_percent_bar(int percent, bool blocked)
 {
-    __shell_percentage__draw_progress_bar(percent, blocked);
-    setvbuf(stdout, NULL, _IONBF, 0);
-    printf("%s", __shell_percentage__RESTORE_FG);
-    setvbuf(stdout, NULL, _IOLBF, 0);
+    if (show_progress_bar)
+    {
+        __shell_percentage__draw_progress_bar(percent, blocked);
+        setvbuf(stdout, NULL, _IONBF, 0);
+        printf("%s", __shell_percentage__RESTORE_FG);
+        setvbuf(stdout, NULL, _IOLBF, 0);
+    }
 }
 
 // ############## FIFO ##############
@@ -1336,10 +1342,10 @@ static void *ffmpeg_thread_video_func(void *data)
                                 video_position_percent = percent_new;
                                 draw_percent_bar(video_position_percent, false);
                             }
+#if 0
                             printf("curpos:%ld / %ld %d\n",
                                     ms, video_length,
                                     video_position_percent);
-#if 0
                             int64_t milliseconds = ms % 1000;
                             int64_t seconds = (ms / 1000) % 60;
                             int64_t minutes = (ms / (1000 * 60)) % 60;
@@ -2043,7 +2049,10 @@ static void *thread_key_func(void *data)
  */
 void INThandler(int sig)
 {
-    __shell_percentage__destroy_scroll_area();
+    if (show_progress_bar)
+    {
+        __shell_percentage__destroy_scroll_area();
+    }
     restore_term();
     signal(sig, SIG_IGN);
     printf("_\n");
@@ -2058,7 +2067,7 @@ int main(int argc, char *argv[])
 
     char *input_file_arg_str = NULL;
     int opt;
-    const char     *short_opt = "hvti:p:f:";
+    const char     *short_opt = "hvTti:p:f:x";
     struct option   long_opt[] =
     {
         {"help",          no_argument,       NULL, 'h'},
@@ -2078,6 +2087,14 @@ int main(int argc, char *argv[])
                 switch_tcponly = 1;
                 break;
 
+            case 'T':
+                use_tor = 1;
+                break;
+
+            case 'b':
+                show_progress_bar = true;
+                break;
+
             case 'v':
                 printf("ToxVideoplayer version: %s\n", global_tox_vplayer_version_string);
                 return (0);
@@ -2085,11 +2102,13 @@ int main(int argc, char *argv[])
             case 'h':
                 printf("Usage: %s [OPTIONS]\n", argv[0]);
                 printf("  -t,                                  tcp only mode\n");
-                printf("  -i,                                  input filename or \"desktop\"\n");
-                printf("  -p,                                  on \"desktop\" use this as pulse input device");
-                printf("                                           otherwise  \"default\" is used");
-                printf("  -f,                                  on \"desktop\" use this as capture FPS");
-                printf("                                           otherwise  \"30\" is used");
+                printf("  -T,                                  use tor proxy\n");
+                printf("  -i,                                  input filename or \"desktop\" to screenshare\n");
+                printf("  -b,                                  show progress bar\n");
+                printf("  -p,                                  on \"desktop\" use this as pulse input device\n");
+                printf("                                           otherwise \"default\" is used\n");
+                printf("  -f,                                  on \"desktop\" use this as capture FPS\n");
+                printf("                                           otherwise \"30\" is used\n");
                 printf("  -v, --version                        show version\n");
                 printf("  -h, --help                           print this help and exit\n");
                 printf("\n");
@@ -2175,9 +2194,31 @@ int main(int argc, char *argv[])
     else
     {
         options.udp_enabled = false; // TCP mode
-        printf("setting TCP mode\n");
+        printf("setting TCP mode (tcp option)\n");
     }
 
+    if (use_tor == 1)
+    {
+        options.udp_enabled = false; // TCP mode
+        options.local_discovery_enabled = false;
+        printf("setting TCP mode (tor option)\n");
+    }
+
+    if (use_tor == 1)
+    {
+        printf("setting Tor Relay mode\n");
+        const char *proxy_host = "127.0.0.1\n";
+        printf("setting proxy_host %s", proxy_host);
+        uint16_t proxy_port = PROXY_PORT_TOR_DEFAULT;
+        printf("setting proxy_port %d\n", (int)proxy_port);
+        options.proxy_type = TOX_PROXY_TYPE_SOCKS5;
+        options.proxy_host = proxy_host;
+        options.proxy_port = proxy_port;
+    }
+    else
+    {
+        options.proxy_type = TOX_PROXY_TYPE_NONE;
+    }
 
     FILE *f = fopen(savedata_filename, "rb");
     uint8_t *savedata = NULL;
@@ -2252,6 +2293,13 @@ int main(int argc, char *argv[])
     // ----- CALLBACKS -----
     // ----- bootstrap -----
     printf("Tox bootstrapping\n");
+
+    // dummy node to bootstrap
+    if (use_tor == 0)
+    {
+        tox_bootstrap(tox, "local", 7766, (uint8_t *)"2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1", NULL);
+    }
+
     for (int i = 0; nodes1[i].ip; i++)
     {
         uint8_t *key = (uint8_t *)calloc(1, 100);
@@ -2260,7 +2308,12 @@ int main(int argc, char *argv[])
         {
             continue;
         }
-        tox_bootstrap(tox, nodes1[i].ip, nodes1[i].udp_port, key, NULL);
+
+        if (use_tor == 0)
+        {
+            tox_bootstrap(tox, nodes1[i].ip, nodes1[i].udp_port, key, NULL);
+        }
+
         if (nodes1[i].tcp_port != 0)
         {
             tox_add_tcp_relay(tox, nodes1[i].ip, nodes1[i].tcp_port, key, NULL);
@@ -2287,9 +2340,11 @@ int main(int argc, char *argv[])
     sa.sa_flags = 0;// not SA_RESTART!;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
-    // signal(SIGINT, INThandler);
 
-    __shell_percentage__setup_scroll_area();
+    if (show_progress_bar)
+    {
+        __shell_percentage__setup_scroll_area();
+    }
 
     draw_percent_bar(1, true);
 
@@ -2407,7 +2462,10 @@ int main(int argc, char *argv[])
     }
 
     restore_term();
-    __shell_percentage__destroy_scroll_area();
+    if (show_progress_bar)
+    {
+        __shell_percentage__destroy_scroll_area();
+    }
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("\n");
     setvbuf(stdout, NULL, _IOLBF, 0);
