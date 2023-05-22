@@ -144,6 +144,12 @@ struct Node1 {
     { NULL, NULL, 0, 0 }
 };
 
+/**
+ * @brief Converts a hexadecimal string to binary format
+ *
+ * @param hex_string The hexadecimal string to be converted, must be NULL terminated
+ * @param output Pointer to the binary format output buffer
+ */
 static void hex_string_to_bin2(const char *hex_string, uint8_t *output)
 {
     size_t len = strlen(hex_string) / 2;
@@ -159,6 +165,14 @@ static void hex_string_to_bin2(const char *hex_string, uint8_t *output)
     }
 }
 
+/**
+ * @brief Converts binary data to uppercase hexadecimal string using libsodium
+ *
+ * @param bin Pointer to binary data
+ * @param bin_size Size of binary data
+ * @param hex Pointer to hexadecimal string
+ * @param hex_size Size of hexadecimal string
+ */
 static void bin2upHex(const uint8_t *bin, uint32_t bin_size, char *hex, uint32_t hex_size)
 {
     sodium_bin2hex(hex, hex_size, bin, bin_size);
@@ -168,7 +182,11 @@ static void bin2upHex(const uint8_t *bin, uint32_t bin_size, char *hex, uint32_t
     }
 }
 
-// gives a counter value that increases every millisecond
+/**
+ * @brief This function returns a counter value that increases every millisecond using the CLOCK_MONOTONIC clock.
+ *
+ * @return uint64_t The current counter value in milliseconds.
+ */
 static uint64_t current_time_monotonic_default2(void)
 {
     struct timespec clock_mono;
@@ -177,19 +195,84 @@ static uint64_t current_time_monotonic_default2(void)
     return time;
 }
 
+/**
+ * @brief Delays the execution of the current thread for a specified number of milliseconds.
+ *
+ * @param ms The number of milliseconds to delay the execution of the current thread.
+ */
 static void yieldcpu(uint32_t ms)
 {
     usleep(1000 * ms);
 }
 
+/**
+ * @brief Get the current Unix time.
+ *
+ * @return The time as the number of seconds since the Epoch.
+ */
 static time_t get_unix_time(void)
 {
     return time(NULL);
 }
 
+/**
+ * @brief Calculates the percentage of the current value relative to the maximum value.
+ *
+ * @param current_value The current value.
+ * @param max_value The maximum value.
+ * @return The percentage of the current value relative to the maximum value.
+ */
+static float calculate_percentage(int64_t current_value, int64_t max_value)
+{
+    float percentage = ((float)current_value / (float)max_value) * 100.0;
+    return percentage;
+}
+
+/**
+ * @brief Convert presentation timestamp (pts) to milliseconds (ms)
+ *
+ * @param pts Presentation timestamp
+ * @param time_base Time base
+ * @return Converted value in milliseconds
+ */
 static int64_t pts_to_ms(int64_t pts, AVRational time_base)
 {
     return av_rescale_q(pts, time_base, AV_TIME_BASE_Q) / 1000;
+}
+
+/**
+ * @brief Changes the terminal settings to disable canonical mode and echo.
+ *
+ */
+static void change_term()
+{
+    printf("change_term\n");
+    /* Get the terminal settings */
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    /* Disable canonical mode and echo */
+    newt.c_lflag &= ~(ICANON | ECHO);
+    /* Set the new terminal settings */
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+}
+
+/**
+ * @brief Restores the old terminal settings
+ *
+ */
+static void restore_term()
+{
+    printf("restore_term\n");
+    /* Restore the old terminal settings */
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+}
+
+static void draw_percent_bar(int percent, bool blocked)
+{
+    __shell_percentage__draw_progress_bar(percent, blocked);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    printf("%s", __shell_percentage__RESTORE_FG);
+    setvbuf(stdout, NULL, _IOLBF, 0);
 }
 
 // ############## FIFO ##############
@@ -582,6 +665,12 @@ char font8x8_basic[128][8] =
 // "0" -> [48]
 // "9" -> [57]
 // ":" -> [58]
+/**
+ * @brief Get the bitmap of a character from a font
+ *
+ * @param font_char_num The character number to get the bitmap from
+ * @return char* The bitmap of the character
+ */
 static char *get_bitmap_from_font(int font_char_num)
 {
     char *ret_bitmap = font8x8_basic[0x3F]; // fallback: "?"
@@ -601,6 +690,16 @@ static char *get_bitmap_from_font(int font_char_num)
     return ret_bitmap;
 }
 
+/**
+ * @brief Prints a character from a font to a given location in a Y-plane buffer of a YUV display
+ *
+ * @param start_x_pix Starting x-coordinate of the character on the display
+ * @param start_y_pix Starting y-coordinate of the character on the display
+ * @param font_char_num The character number in the font to be printed
+ * @param col_value The color value to be used for the character
+ * @param yy Pointer to the y-plane of the display
+ * @param w Width of the display
+ */
 void print_font_char_ptr(int start_x_pix, int start_y_pix, int font_char_num,
                          uint8_t col_value, uint8_t *yy, int w)
 {
@@ -819,6 +918,14 @@ static void flush_video(int age_ms)
     free(yuv_image);
 }
 
+/**
+ * @brief Seeks to a specific timestamp within a given stream index.
+ *
+ * @param format_ctx_seek The format context to seek within.
+ * @param codec_context The codec context to flush buffers for.
+ * @param stream_index The index of the stream to seek within.
+ * @return int Returns 0 on success, or an error code on failure.
+ */
 static int seek_stream(AVFormatContext *format_ctx_seek, AVCodecContext *codec_context, int stream_index)
 {
     int64_t cur_pos;
@@ -846,6 +953,12 @@ static int seek_stream(AVFormatContext *format_ctx_seek, AVCodecContext *codec_c
     return 0;
 }
 
+/**
+ * @brief Prints audio codec parameters
+ *
+ * @param codecpar AVCodecParameters pointer to the audio codec parameters
+ * @param text_prefix Prefix to add to the printed text
+ */
 static void print_codec_parameters_audio(AVCodecParameters *codecpar, const char* text_prefix) {
     printf("%s===================================\n", text_prefix);
     printf("%sCodec Type: %s\n", text_prefix, avcodec_get_name(codecpar->codec_id));
@@ -866,6 +979,12 @@ static void print_codec_parameters_audio(AVCodecParameters *codecpar, const char
     printf("%s===================================\n", text_prefix);
 }
 
+/**
+ * @brief Prints video codec parameters
+ *
+ * @param codecpar AVCodecParameters pointer to the video codec parameters
+ * @param text_prefix Prefix to add to the printed text
+ */
 static void print_codec_parameters_video(AVCodecParameters *codecpar, const char* text_prefix) {
     AVCodecContext *codec = avcodec_alloc_context3(NULL);
     if (codec == NULL)
@@ -894,6 +1013,14 @@ static void print_codec_parameters_video(AVCodecParameters *codecpar, const char
     avcodec_free_context(&codec);
 }
 
+/**
+ * @brief Calculates the bounding box to full HD resolution.
+ *
+ * @param in_width The input width.
+ * @param in_height The input height.
+ * @param out_width The output width.
+ * @param out_height The output height.
+ */
 static void calculateBoundingBox_to_fullhd(int in_width, int in_height, int *out_width, int *out_height)
 {
     const double aspectRatio = (double)in_width / (double)in_height;
@@ -910,13 +1037,16 @@ static void *ffmpeg_thread_video_func(void *data)
 {
     AVFormatContext *format_ctx = NULL;
     AVCodecContext *video_codec_ctx = NULL;
-    SwrContext *swr_ctx = NULL;
     AVCodec *video_codec = NULL;
     AVPacket packet;
     AVFrame *frame = NULL;
     int video_stream_index = -1;
     int64_t video_start_time = 0;
+    int64_t video_av_starttime = 0;
     int64_t video_duration = 0;
+    int64_t video_length = 0;
+    int64_t video_time_base_den = 0;
+    int video_position_percent = -1;
     int num_samples;
     int output_width = 0;
     int output_height = 0;
@@ -1123,19 +1253,27 @@ static void *ffmpeg_thread_video_func(void *data)
     {
         video_start_time = pts_to_ms(format_ctx->streams[video_stream_index]->start_time, time_base_video);
     }
-    fprintf(stderr, "stream start time: %ld\n", video_start_time);
+    printf("stream start time: %ld\n", video_start_time);
+
     if (format_ctx->streams[video_stream_index]->duration > 0)
     {
         video_duration = pts_to_ms(format_ctx->streams[video_stream_index]->duration, time_base_video);
     }
-    else if (format_ctx->duration > 0)
+
+    if (format_ctx->duration > 0)
     {
-        video_duration = pts_to_ms(format_ctx->duration, time_base_video);
+        int64_t frame_rate = 0;
+        video_duration = format_ctx->duration;
+        video_time_base_den = format_ctx->streams[video_stream_index]->time_base.den;
+        // int64_t frame_rate = format_ctx->streams[video_stream_index]->avg_frame_rate.num /
+        //                 format_ctx->streams[video_stream_index]->avg_frame_rate.den;
+        video_length = video_duration / AV_TIME_BASE * 1000;
     }
-    fprintf(stderr, "stream duration: %ld %ld\n", video_duration, format_ctx->duration);
+    printf("stream duration: %ld length: %ld\n", video_duration, video_length);
 
     while ((ffmpeg_thread_video_stop != 1) && (main_loop_running))
     {
+        video_av_starttime = av_gettime();
         // Read packets from the input file and decode them        
         while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_video_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
         {
@@ -1185,6 +1323,32 @@ static void *ffmpeg_thread_video_func(void *data)
                     else if (http_mode == 1)
                     {
                         ms = global_pts;
+                    }
+                    else
+                    {
+                        if (video_length > 0)
+                        {
+                            // int64_t current_time = av_gettime() - video_av_starttime;
+                            // int64_t video_cur_position_ms = current_time * video_time_base_den / AV_TIME_BASE;
+                            const int percent_new = (int)calculate_percentage(ms, video_length);
+                            if (percent_new != video_position_percent)
+                            {
+                                video_position_percent = percent_new;
+                                draw_percent_bar(video_position_percent, false);
+                            }
+                            printf("curpos:%ld / %ld %d\n",
+                                    ms, video_length,
+                                    video_position_percent);
+#if 0
+                            int64_t milliseconds = ms % 1000;
+                            int64_t seconds = (ms / 1000) % 60;
+                            int64_t minutes = (ms / (1000 * 60)) % 60;
+                            int64_t hours = (ms / (1000 * 60 * 60)) % 24;
+                            char time_string[20];
+                            snprintf(time_string, sizeof(time_string), "%02ld:%02ld:%02ld.%03ld", hours, minutes, seconds, milliseconds);
+                            printf("Current position: %s\n", time_string);
+#endif
+                        }
                     }
 
                     if (global_need_video_seek != 0)
@@ -1273,6 +1437,7 @@ static void *ffmpeg_thread_video_func(void *data)
     avcodec_free_context(&video_codec_ctx);
     avformat_close_input(&format_ctx);
     av_free(yuv_buffer);
+    sws_freeContext(scaler_ctx);
 
     printf("ffmpeg Video Thread:Clean thread exit!\n");
     return NULL;
@@ -1626,33 +1791,6 @@ static void *thread_time_func(void *data)
     return NULL;
 }
 
-static void change_term()
-{
-    printf("change_term\n");
-    /* Get the terminal settings */
-    tcgetattr(STDIN_FILENO, &oldt);
-    newt = oldt;
-    /* Disable canonical mode and echo */
-    newt.c_lflag &= ~(ICANON | ECHO);
-    /* Set the new terminal settings */
-    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
-}
-
-static void restore_term()
-{
-    printf("restore_term\n");
-    /* Restore the old terminal settings */
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-}
-
-static void draw_percent_bar(int percent, bool blocked)
-{
-    __shell_percentage__draw_progress_bar(percent, blocked);
-    setvbuf(stdout, NULL, _IONBF, 0);
-    printf("%s", __shell_percentage__RESTORE_FG);
-    setvbuf(stdout, NULL, _IOLBF, 0);
-}
-
 static void *thread_key_func(void *data)
 {
     int ch;
@@ -1665,9 +1803,7 @@ static void *thread_key_func(void *data)
         /* Wait for a keypress */
         while ((1 == 1) && (main_loop_running))
         {
-            printf("KK:getchar()\n");
             ch = getchar();
-            printf("KK:getchar() DONE\n");
             if (ch == ' ')
             {
                 break;
@@ -1896,6 +2032,15 @@ static void *thread_key_func(void *data)
 }
 
 // signal handlers --------------------------------------------------
+/**
+ * @brief Signal handler for INT signal
+ *
+ * This function is called when the program receives an INT signal.
+ * It destroys the scroll area, restores the terminal settings,
+ * and sets the main loop running flag to false.
+ *
+ * @param sig The signal number
+ */
 void INThandler(int sig)
 {
     __shell_percentage__destroy_scroll_area();
@@ -2043,7 +2188,7 @@ int main(int argc, char *argv[])
         size_t savedataSize = ftell(f);
         fseek(f, 0, SEEK_SET);
 
-        savedata = malloc(savedataSize);
+        savedata = calloc(1, savedataSize);
         size_t ret = fread(savedata, savedataSize, 1, f);
 
         // TODO: handle ret return vlaue here!
@@ -2073,6 +2218,9 @@ int main(int argc, char *argv[])
     printf("init Tox [TOXUTIL]\n");
     Tox *tox = tox_utils_new(&options, NULL);
 #endif
+
+    free(savedata);
+
     printf("init ToxAV\n");
     toxav = toxav_new(tox, NULL);
 
@@ -2143,10 +2291,12 @@ int main(int argc, char *argv[])
 
     __shell_percentage__setup_scroll_area();
 
-    draw_percent_bar(99, true);
+    draw_percent_bar(1, true);
 
     tox_iterate(tox, NULL);
+    draw_percent_bar(4, true);
     toxav_iterate(toxav);
+    draw_percent_bar(6, true);
     // ----------- wait for Tox to come online -----------
     while (main_loop_running)
     {
@@ -2154,6 +2304,7 @@ int main(int argc, char *argv[])
         yieldcpu(tox_iteration_interval(tox));
         if (self_online > 0)
         {
+            draw_percent_bar(10, true);
             break;
         }
     }
@@ -2218,11 +2369,11 @@ int main(int argc, char *argv[])
 
     // Clean up
     thread_key_stop = 1;
-    setvbuf(stdin, NULL, _IONBF, 0);
-    fprintf(stdin, "\n");
-    fprintf(stdin, "%c", EOF);
-    fclose(stdin);
-    pthread_join(thread_key, NULL);
+    //setvbuf(stdin, NULL, _IONBF, 0);
+    //fprintf(stdin, "\n");
+    //fprintf(stdin, "%c", EOF);
+    //fclose(stdin);
+    //**// pthread_join(thread_key, NULL);
 
     ffmpeg_thread_audio_stop = 1;
     pthread_join(ffmpeg_thread_audio, NULL);
