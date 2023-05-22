@@ -118,7 +118,7 @@ AVRational time_base_audio = (AVRational) {0, 0};
 AVRational time_base_video = (AVRational) {0, 0};
 int64_t audio_start_time = 0;
 int global_audio_delay_factor = 0;
-int global_video_delay_factor = 0;
+int global_video_delay_factor = 7; // default video delay of 7 * 50 (= 350m) to audio
 pthread_mutex_t time___mutex;
 #define PLAY_PAUSED 0
 #define PLAY_PLAYING 1
@@ -1295,6 +1295,11 @@ static void *ffmpeg_thread_video_func(void *data)
 
                 while (ret >= 0)
                 {
+                    while (global_play_status == PLAY_PAUSED)
+                    {
+                        yieldcpu(4);
+                    }
+
                     ret = avcodec_receive_frame(video_codec_ctx, frame);
                     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                     {
@@ -1317,7 +1322,11 @@ static void *ffmpeg_thread_video_func(void *data)
                             dst_yuv_buffer, planes_stride);
 
                     int64_t pts = frame->pts;
-                    int64_t ms = pts_to_ms(pts, time_base_video) - video_start_time; // convert PTS to milliseconds
+                    int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
+                    if (labs(video_start_time) > 2000)
+                    {
+                        ms = ms - video_start_time;
+                    }
                     //**// printf("PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_video.num, time_base_video.den, ms);
                     // printf("TS: frame %ld %ld\n", global_pts, ms);
 
@@ -1640,6 +1649,11 @@ static void *ffmpeg_thread_audio_func(void *data)
 
                 while (ret >= 0)
                 {
+                    while (global_play_status == PLAY_PAUSED)
+                    {
+                        yieldcpu(4);
+                    }
+
                     ret = avcodec_receive_frame(audio_codec_ctx, frame);
                     if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                     {
@@ -1666,7 +1680,11 @@ static void *ffmpeg_thread_audio_func(void *data)
 
                     // Do something with the converted samples here
                     int64_t pts = frame->pts;
-                    int64_t ms = pts_to_ms(pts, time_base_audio) - audio_start_time; // convert PTS to milliseconds
+                    int64_t ms = pts_to_ms(pts, time_base_audio); // convert PTS to milliseconds
+                    if (labs(audio_start_time) > 2000)
+                    {
+                        ms = ms - audio_start_time;
+                    }
                     //**// printf("AA:PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_audio.num, time_base_audio.den, ms);
 
                     if ((desktop_mode == 1) || (ms > (int64_t)1000*(int64_t)1000*(int64_t)1000*(int64_t)1000))
