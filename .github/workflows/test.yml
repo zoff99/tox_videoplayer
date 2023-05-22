@@ -48,8 +48,7 @@ jobs:
           libswresample-dev \
           libswscale-dev \
           libx264-dev \
-          libx11-dev \
-          libasan4
+          libx11-dev
 
       - name: compile binary
         run: |
