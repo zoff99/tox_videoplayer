@@ -25,8 +25,14 @@
  */
 
 /*
- * 
+ *
+
+ ASAN compile:
  gcc -O3 -g -fsanitize=address -static-libasan -fPIC tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
+
+ NORMAL compile:
+ gcc -O3 -flto -fomit-frame-pointer -g -march=native -fPIC tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
+
  * 
  */
 
