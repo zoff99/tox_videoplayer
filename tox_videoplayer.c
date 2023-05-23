@@ -117,6 +117,7 @@ static const int global_friend_num = 0; // we always only use the first friend
 char *global_pulse_inputdevice_name = NULL;
 char *global_desktop_capture_fps = NULL;
 int global_osd_message_toggle = 0;
+int global_hdmifreq_toggle = 60;
 static bool main_loop_running;
 int need_free_global_pulse_inputdevice_name = 0;
 int need_free_global_desktop_capture_fps = 0;
@@ -1430,7 +1431,17 @@ static void *ffmpeg_thread_video_func(void *data)
 
                                     if (error2 != TOXAV_ERR_SEND_FRAME_OK)
                                     {
-                                        fprintf(stderr, "toxav_video_send_frame_age:%d %d\n", (int)ret2, error2);
+                                        fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying ...\n", (int)ret2, error2);
+                                        yieldcpu(1);
+                                        frame_age_ms = 1;
+                                        ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
+                                                    planes_stride[0], output_height,
+                                                    dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
+                                                    &error2, frame_age_ms);
+                                        if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+                                        {
+                                            fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying -> FAILED\n", (int)ret2, error2);
+                                        }
                                     }
                                 }
                                 else
@@ -1748,8 +1759,23 @@ static void *ffmpeg_thread_audio_func(void *data)
                                                     out_channels, out_sample_rate, &error3);
                                         if (error3 != TOXAV_ERR_SEND_FRAME_OK)
                                         {
-                                            fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d\n",
+                                            fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d -> retrying ...\n",
                                                 error3, out_samples, out_channels, out_sample_rate);
+                                            toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
+                                                        out_channels, out_sample_rate, &error3);
+                                            if (error3 != TOXAV_ERR_SEND_FRAME_OK)
+                                            {
+                                                fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d -> retrying again ...\n",
+                                                    error3, out_samples, out_channels, out_sample_rate);
+                                                yieldcpu(1);
+                                                toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
+                                                            out_channels, out_sample_rate, &error3);
+                                                if (error3 != TOXAV_ERR_SEND_FRAME_OK)
+                                                {
+                                                    fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d -> retrying -> FAILED\n",
+                                                        error3, out_samples, out_channels, out_sample_rate);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1839,6 +1865,10 @@ static void *thread_key_func(void *data)
                 break;
             }
             else if (ch == 'f')
+            {
+                break;
+            }
+            else if (ch == 'i')
             {
                 break;
             }
@@ -1963,6 +1993,45 @@ static void *thread_key_func(void *data)
                 uint32_t res_m = tox_friend_send_message(local_tox, 0, TOX_MESSAGE_TYPE_NORMAL, (uint8_t *)message_001, strlen(message_001), NULL);
                 printf("KK:OSD:send_message:OFF:res=%d\n", res_m);
                 global_osd_message_toggle = 0;
+            }
+        }
+        else if (ch == 'i')
+        {
+            printf("KK:-----HDMIFREQ----\n");
+            if (global_hdmifreq_toggle == 60)
+            {
+                const char *message_001 = ".hdmi 24";
+                uint32_t res_m = tox_friend_send_message(local_tox, 0, TOX_MESSAGE_TYPE_NORMAL, (uint8_t *)message_001, strlen(message_001), NULL);
+                printf("KK:HDMIFREQ:send_message:24:res=%d\n", res_m);
+                global_hdmifreq_toggle = 24;
+            }
+            else if (global_hdmifreq_toggle == 24)
+            {
+                const char *message_001 = ".hdmi 25";
+                uint32_t res_m = tox_friend_send_message(local_tox, 0, TOX_MESSAGE_TYPE_NORMAL, (uint8_t *)message_001, strlen(message_001), NULL);
+                printf("KK:HDMIFREQ:send_message:25:res=%d\n", res_m);
+                global_hdmifreq_toggle = 25;
+            }
+            else if (global_hdmifreq_toggle == 25)
+            {
+                const char *message_001 = ".hdmi 30";
+                uint32_t res_m = tox_friend_send_message(local_tox, 0, TOX_MESSAGE_TYPE_NORMAL, (uint8_t *)message_001, strlen(message_001), NULL);
+                printf("KK:HDMIFREQ:send_message:30:res=%d\n", res_m);
+                global_hdmifreq_toggle = 30;
+            }
+            else if (global_hdmifreq_toggle == 30)
+            {
+                const char *message_001 = ".hdmi 50";
+                uint32_t res_m = tox_friend_send_message(local_tox, 0, TOX_MESSAGE_TYPE_NORMAL, (uint8_t *)message_001, strlen(message_001), NULL);
+                printf("KK:HDMIFREQ:send_message:50:res=%d\n", res_m);
+                global_hdmifreq_toggle = 50;
+            }
+            else if (global_hdmifreq_toggle == 50)
+            {
+                const char *message_001 = ".hdmi 60";
+                uint32_t res_m = tox_friend_send_message(local_tox, 0, TOX_MESSAGE_TYPE_NORMAL, (uint8_t *)message_001, strlen(message_001), NULL);
+                printf("KK:HDMIFREQ:send_message:60:res=%d\n", res_m);
+                global_hdmifreq_toggle = 60;
             }
         }
         else if (ch == 'h')
