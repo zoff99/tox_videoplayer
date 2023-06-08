@@ -141,6 +141,9 @@ struct termios oldt;
 struct termios newt;
 
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 struct Node1 {
     char *ip;
     char *key;
@@ -1503,6 +1506,21 @@ static void *ffmpeg_thread_audio_func(void *data)
     {
         desktop_mode = 1;
         AVDictionary* options = NULL;
+
+
+#ifdef WINDOWS__XXXXXX
+        deviceName = DS_GetDefaultDevice("a");
+        if (deviceName == "") {
+            fprintf(stderr, "AA:Fail to get default audio device, maybe no microphone\n");
+        }
+        pulse_device_name = "audio=" + deviceName;
+        AVInputFormat *inputFormat = av_find_input_format("dshow");
+#elif MACOS__XXXXXX
+        pulse_device_name = ":0";
+        AVInputFormat *inputFormat = av_find_input_format("avfoundation");
+        //"[[VIDEO]:[AUDIO]]"
+#endif
+
         // av_dict_set(&options, "framerate", "30", 0);
         AVInputFormat *ifmt = av_find_input_format("pulse");
 
@@ -1588,16 +1606,30 @@ static void *ffmpeg_thread_audio_func(void *data)
 
     if (strncmp((char *)inputfile, "desktop", strlen((char *)"desktop")) == 0)
     {
-        //if (audio_codec_ctx->channel_layout == 0)
+        fprintf(stderr, "AA:audio_codec_ctx->channel_layout: %ld AV_CH_LAYOUT_STEREO: %lld default: %ld\n",
+            audio_codec_ctx->channel_layout, (long long)AV_CH_LAYOUT_STEREO,
+            av_get_default_channel_layout(audio_codec_ctx->channel_layout));
+        if (audio_codec_ctx->channel_layout == 0)
         {
             // HINT: no idea what to do here. just guess STEREO?
             audio_codec_ctx->channel_layout = AV_CH_LAYOUT_STEREO;
         }
+
+        fprintf(stderr, "AA:audio_codec_ctx->frame_size: %d\n",
+            format_ctx->streams[audio_stream_index]->codecpar->frame_size);
+        if (format_ctx->streams[audio_stream_index]->codecpar->frame_size == 0)
+        {
+            // HINT: no idea what to do here. just guess?
+        }
     }
+
+    fprintf(stderr, "AA:audio_codec_ctx->sample_rate: %d\n", format_ctx->streams[audio_stream_index]->codecpar->sample_rate);
 
     swr_ctx = swr_alloc_set_opts(NULL,
                                  out_channel_layout, AV_SAMPLE_FMT_S16, out_sample_rate,
-                                 audio_codec_ctx->channel_layout, audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate,
+                                 audio_codec_ctx->channel_layout,
+                                 format_ctx->streams[audio_stream_index]->codecpar->format,
+                                 format_ctx->streams[audio_stream_index]->codecpar->sample_rate,
                                  0, NULL);
     if (!swr_ctx) {
         fprintf(stderr, "AA:Could not allocate resampler context\n");
@@ -1652,7 +1684,8 @@ static void *ffmpeg_thread_audio_func(void *data)
     while ((ffmpeg_thread_audio_stop != 1) && (main_loop_running))
     {
         // Read packets from the input file and decode them        
-        while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_audio_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
+        while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_audio_stop != 1)
+                && (friend_online != 0) && (friend_in_call == 1))
         {
             if (packet.stream_index == audio_stream_index)
             {
@@ -1688,9 +1721,18 @@ static void *ffmpeg_thread_audio_func(void *data)
                                                         AV_ROUND_UP);
 
                     // num_samples = swr_get_out_samples(swr_ctx, frame->nb_samples);
-                    av_samples_alloc_array_and_samples(&converted_samples, NULL, out_channels, num_samples, AV_SAMPLE_FMT_S16, 0);
-                    swr_convert(swr_ctx, converted_samples, num_samples, (const uint8_t **)frame->extended_data, frame->nb_samples);
-
+                    av_samples_alloc_array_and_samples(&converted_samples,
+                                NULL,
+                                out_channels,
+                                num_samples,
+                                AV_SAMPLE_FMT_S16,
+                                0);
+                    int samples_out = swr_convert(swr_ctx,
+                            converted_samples,
+                            num_samples,
+                            (const uint8_t **)frame->extended_data,
+                            frame->nb_samples);
+                    // printf("AA:samples_out: %d\n", samples_out);
                     const int want_write_bytes = (num_samples * out_channels * out_bytes_per_sample);
                     size_t written_bytes = fifo_buffer_write(audio_pcm_buffer, converted_samples[0], want_write_bytes);
                     // printf("AA:written bytes: %ld wanted: %d\n", written_bytes, want_write_bytes);
@@ -2568,3 +2610,4 @@ int main(int argc, char *argv[])
     return 0;
 }
 
+#pragma GCC diagnostic pop
