@@ -28,10 +28,10 @@
  *
 
  ASAN compile:
- gcc -O3 -g -fsanitize=address -static-libasan -fPIC tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
+ gcc -O3 -g -fsanitize=address -static-libasan -fPIC -Wno-discarded-qualifiers tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
 
  NORMAL compile:
- gcc -O3 -flto -fomit-frame-pointer -g -march=native -fPIC tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
+ gcc -O3 -flto -fomit-frame-pointer -g -march=native -fPIC -Wno-discarded-qualifiers tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
 
  * 
  */
@@ -67,6 +67,7 @@
 // define this before including toxcore amalgamation -------
 #define MIN_LOGGER_LEVEL LOGGER_LEVEL_WARNING
 #define HW_CODEC_CONFIG_UTOX_UB81
+// #define HW_CODEC_CONFIG_TBW_LINNVENC
 #define HW_CODEC_CONFIG_HIGHVBITRATE
 // define this before including toxcore amalgamation -------
 
