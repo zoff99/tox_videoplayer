@@ -33,6 +33,14 @@
  NORMAL compile:
  gcc -O3 -flto -fomit-frame-pointer -g -march=native -fPIC -Wno-discarded-qualifiers tox_videoplayer.c $(pkg-config --cflags --libs x11 libsodium libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil x264) -pthread -o tox_videoplayer
 
+ MOSTLY STATIC compile:
+ gcc -O3 -fomit-frame-pointer -Wno-discarded-qualifiers -fPIC tox_videoplayer.c \
+  -Wl,-Bstatic \
+  $(pkg-config --cflags --libs libsodium x264) \
+  -Wl,-Bdynamic \
+  $(pkg-config --cflags --libs x11 libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil ) \
+  -pthread -o tox_videoplayer
+
  * 
  */
 
@@ -83,8 +91,8 @@
 // ----------- version -----------
 #define TOX_VPLAYER_VERSION_MAJOR 0
 #define TOX_VPLAYER_VERSION_MINOR 99
-#define TOX_VPLAYER_VERSION_PATCH 4
-static const char global_tox_vplayer_version_string[] = "0.99.4";
+#define TOX_VPLAYER_VERSION_PATCH 5
+static const char global_tox_vplayer_version_string[] = "0.99.5";
 
 // ----------- version -----------
 // ----------- version -----------
@@ -1124,7 +1132,7 @@ static void *ffmpeg_thread_video_func(void *data)
         snprintf(resolution_string, resolution_string_len, "%dx%d", screen_width, screen_height);
         fprintf(stderr, "Display resolution_string: %s\n", resolution_string);
         av_dict_set(&options, "video_size", resolution_string, 0);
-        av_dict_set(&options, "probesize", "200M", 0);
+        av_dict_set(&options, "probesize", "50M", 0);
 
         AVInputFormat *ifmt = av_find_input_format("x11grab");
 
