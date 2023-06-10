@@ -1077,6 +1077,7 @@ static void *ffmpeg_thread_video_func(void *data)
     int output_height = 0;
     uint8_t **converted_samples = NULL;
     int ret;
+    int64_t ms_desktop_pin = 0;
     int desktop_mode = 0;
     int http_mode = 0;
 
@@ -1300,173 +1301,223 @@ static void *ffmpeg_thread_video_func(void *data)
     {
         video_av_starttime = av_gettime();
         // Read packets from the input file and decode them        
-        while ((av_read_frame(format_ctx, &packet) >= 0) && (ffmpeg_thread_video_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
+        while ((ffmpeg_thread_video_stop != 1) && (friend_online != 0) && (friend_in_call == 1))
         {
-            if (packet.stream_index == video_stream_index)
+            if (av_read_frame(format_ctx, &packet) >= 0)
             {
-                // Decode video packet
-                ret = avcodec_send_packet(video_codec_ctx, &packet);
-                if (ret < 0)
+                if (desktop_mode == 1)
                 {
-                    fprintf(stderr, "Error sending video packet for decoding\n");
-                    break;
+                    ms_desktop_pin = global_pts;
                 }
-
-                while (ret >= 0)
+                if (packet.stream_index == video_stream_index)
                 {
-                    while (global_play_status == PLAY_PAUSED)
+                    // Decode video packet
+                    ret = avcodec_send_packet(video_codec_ctx, &packet);
+                    if (ret < 0)
                     {
-                        yieldcpu(4);
-                    }
-
-                    ret = avcodec_receive_frame(video_codec_ctx, frame);
-                    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                    {
-                        break;
-                    }
-                    else if (ret < 0)
-                    {
-                        fprintf(stderr, "Error during video decoding\n");
+                        fprintf(stderr, "Error sending video packet for decoding\n");
                         break;
                     }
 
-                    // Convert the video frame to YUV
-                    int planes_stride[3];
-                    planes_stride[0] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 0);
-                    planes_stride[1] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 1);
-                    planes_stride[2] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 2);
-                    // fprintf(stderr, "VideoFrame:strides:%d %d %d\n",planes_stride[0],planes_stride[1],planes_stride[2]);
-
-                    sws_scale(scaler_ctx, (const uint8_t * const*)frame->data, frame->linesize, 0, video_codec_ctx->height,
-                            dst_yuv_buffer, planes_stride);
-
-                    int64_t pts = frame->pts;
-                    int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
-                    if (labs(video_start_time) > 2000)
+                    while (ret >= 0)
                     {
-                        ms = ms - video_start_time;
-                    }
-                    //**// printf("PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_video.num, time_base_video.den, ms);
-                    // printf("TS: frame %ld %ld\n", global_pts, ms);
-
-                    if ((desktop_mode == 1) || (ms > (int64_t)1000*(int64_t)1000*(int64_t)1000*(int64_t)1000))
-                    {
-                        ms = global_pts;
-                        // printf("timestamps broken, just play\n");
-                    }
-                    else if (http_mode == 1)
-                    {
-                        ms = global_pts;
-                    }
-                    else
-                    {
-                        if (video_length > 0)
+                        while (global_play_status == PLAY_PAUSED)
                         {
-                            // int64_t current_time = av_gettime() - video_av_starttime;
-                            // int64_t video_cur_position_ms = current_time * video_time_base_den / AV_TIME_BASE;
-                            const int percent_new = (int)calculate_percentage(ms, video_length);
-                            if (percent_new != video_position_percent)
-                            {
-                                video_position_percent = percent_new;
-                                draw_percent_bar(video_position_percent, false);
-                            }
-#if 0
-                            printf("curpos:%ld / %ld %d\n",
-                                    ms, video_length,
-                                    video_position_percent);
-                            int64_t milliseconds = ms % 1000;
-                            int64_t seconds = (ms / 1000) % 60;
-                            int64_t minutes = (ms / (1000 * 60)) % 60;
-                            int64_t hours = (ms / (1000 * 60 * 60)) % 24;
-                            char time_string[20];
-                            snprintf(time_string, sizeof(time_string), "%02ld:%02ld:%02ld.%03ld", hours, minutes, seconds, milliseconds);
-                            printf("Current position: %s\n", time_string);
-#endif
+                            yieldcpu(4);
                         }
-                    }
 
-                    if (global_need_video_seek != 0)
-                    {
-                        global_need_video_seek = 0;
-                        av_frame_unref(frame);
-                        int seek_res = seek_stream(format_ctx, video_codec_ctx, video_stream_index);
-                        fprintf(stderr, "seek frame res:%d\n", seek_res);
-                        show_seek_forward();
-                    }
-                    else
-                    {
-                        bool cond = (global_play_status == PLAY_PLAYING) && ((ms + 600) < global_pts);
-                        if (cond)
+                        ret = avcodec_receive_frame(video_codec_ctx, frame);
+                        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                         {
-                            // skip frames, we are seeking forward most likely
-                            av_frame_unref(frame);
-                            //int seek_res = seek_stream(format_ctx, video_codec_ctx, video_stream_index);
-                            // fprintf(stderr, "SKIP frame %d %ld %ld\n", global_play_status, ms, global_pts);
+                            break;
+                        }
+                        else if (ret < 0)
+                        {
+                            fprintf(stderr, "Error during video decoding\n");
+                            break;
+                        }
+
+
+                        // --------------------
+                        // --------------------
+                        // ---- Background ----
+                        // --------------------
+                        // --------------------
+
+                        AVFrame* frame2 = av_frame_clone(frame);
+                        av_frame_unref(frame);
+
+
+
+#if 1
+
+                        // Convert the video frame to YUV
+                        int planes_stride[3];
+                        planes_stride[0] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 0);
+                        planes_stride[1] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 1);
+                        planes_stride[2] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 2);
+                        // fprintf(stderr, "VideoFrame:strides:%d %d %d\n",planes_stride[0],planes_stride[1],planes_stride[2]);
+
+                        sws_scale(scaler_ctx, (const uint8_t * const*)frame2->data, frame2->linesize, 0, video_codec_ctx->height,
+                                dst_yuv_buffer, planes_stride);
+
+                        int64_t pts = frame2->pts;
+                        int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
+                        if (labs(video_start_time) > 2000)
+                        {
+                            ms = ms - video_start_time;
+                        }
+                        //**// printf("PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_video.num, time_base_video.den, ms);
+                        // printf("TS: frame %ld %ld\n", global_pts, ms);
+
+                        if ((desktop_mode == 1) || (ms > (int64_t)1000*(int64_t)1000*(int64_t)1000*(int64_t)1000))
+                        {
+                            ms = global_pts;
+                            // printf("timestamps broken, just play\n");
+                        }
+                        else if (http_mode == 1)
+                        {
+                            ms = global_pts;
+                        }
+                        else
+                        {
+                            if (video_length > 0)
+                            {
+                                // int64_t current_time = av_gettime() - video_av_starttime;
+                                // int64_t video_cur_position_ms = current_time * video_time_base_den / AV_TIME_BASE;
+                                const int percent_new = (int)calculate_percentage(ms, video_length);
+                                if (percent_new != video_position_percent)
+                                {
+                                    video_position_percent = percent_new;
+                                    draw_percent_bar(video_position_percent, false);
+                                }
+#if 0
+                                printf("curpos:%ld / %ld %d\n",
+                                        ms, video_length,
+                                        video_position_percent);
+                                int64_t milliseconds = ms % 1000;
+                                int64_t seconds = (ms / 1000) % 60;
+                                int64_t minutes = (ms / (1000 * 60)) % 60;
+                                int64_t hours = (ms / (1000 * 60 * 60)) % 24;
+                                char time_string[20];
+                                snprintf(time_string, sizeof(time_string), "%02ld:%02ld:%02ld.%03ld", hours, minutes, seconds, milliseconds);
+                                printf("Current position: %s\n", time_string);
+#endif
+                            }
+                        }
+
+                        if (global_need_video_seek != 0)
+                        {
+                            global_need_video_seek = 0;
+                            av_frame_unref(frame2);
+                            int seek_res = seek_stream(format_ctx, video_codec_ctx, video_stream_index);
+                            fprintf(stderr, "seek frame res:%d\n", seek_res);
                             show_seek_forward();
                         }
                         else
                         {
-                            int counter = 0;
-                            const int sleep_ms = 4;
-                            const int one_sec_ms = 1000;
-
-                            int delay_add = 0;
-                            if (desktop_mode == 0)
+                            bool cond = (global_play_status == PLAY_PLAYING) && ((ms + 600) < global_pts);
+                            if (cond)
                             {
-                                // video delay only works on real files
-                                delay_add = global_video_delay_factor * 50;
+                                // skip frames, we are seeking forward most likely
+                                av_frame_unref(frame2);
+                                //int seek_res = seek_stream(format_ctx, video_codec_ctx, video_stream_index);
+                                // fprintf(stderr, "SKIP frame %d %ld %ld\n", global_play_status, ms, global_pts);
+                                show_seek_forward();
                             }
-
-
-                            while ((global_play_status == PLAY_PAUSED) || ((ms + delay_add) > global_pts))
+                            else
                             {
-                                usleep(1000 * sleep_ms);
-                                counter++;
-                                if (counter > (one_sec_ms / sleep_ms))
+                                int counter = 0;
+                                const int sleep_ms = 4;
+                                const int one_sec_ms = 1000;
+
+                                int delay_add = 0;
+                                if (desktop_mode == 0)
                                 {
-                                    // sleep for max. 1 second
-                                    break;
+                                    // video delay only works on real files
+                                    delay_add = global_video_delay_factor * 50;
                                 }
-                            }
 
-                            if (toxav != NULL)
-                            {
-                                if (global_play_status == PLAY_PLAYING)
+
+                                while ((global_play_status == PLAY_PAUSED) || ((ms + delay_add) > global_pts))
                                 {
-                                    // fprintf(stderr, "frame h:%d %d\n", frame->height, output_height);
-                                    uint32_t frame_age_ms = 0;
-                                    TOXAV_ERR_SEND_FRAME error2;
-                                    bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
-                                                planes_stride[0], output_height,
-                                                dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
-                                                &error2, frame_age_ms);
-
-                                    if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+                                    usleep(1000 * sleep_ms);
+                                    counter++;
+                                    if (counter > (one_sec_ms / sleep_ms))
                                     {
-                                        fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying ...\n", (int)ret2, error2);
-                                        yieldcpu(1);
-                                        frame_age_ms = 1;
-                                        ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
+                                        // sleep for max. 1 second
+                                        break;
+                                    }
+                                }
+
+                                if (toxav != NULL)
+                                {
+                                    if (global_play_status == PLAY_PLAYING)
+                                    {
+                                        // fprintf(stderr, "frame h:%d %d\n", frame->height, output_height);
+                                        uint32_t frame_age_ms = 0;
+                                        if (desktop_mode == 1)
+                                        {
+                                            frame_age_ms = global_pts - ms_desktop_pin;
+                                            if (frame_age_ms < 0)
+                                            {
+                                                frame_age_ms = 0;
+                                            }
+                                            else if (frame_age_ms > 1000)
+                                            {
+                                                frame_age_ms = 1000;
+                                            }
+                                            // fprintf(stderr, "frame age:%d\n", frame_age_ms);
+                                        }
+                                        TOXAV_ERR_SEND_FRAME error2;
+                                        bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
                                                     planes_stride[0], output_height,
                                                     dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
                                                     &error2, frame_age_ms);
+
                                         if (error2 != TOXAV_ERR_SEND_FRAME_OK)
                                         {
-                                            fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying -> FAILED\n", (int)ret2, error2);
+                                            fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying ...\n", (int)ret2, error2);
+                                            yieldcpu(1);
+                                            frame_age_ms = 1;
+                                            ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
+                                                        planes_stride[0], output_height,
+                                                        dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
+                                                        &error2, frame_age_ms);
+                                            if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+                                            {
+                                                fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying -> FAILED\n", (int)ret2, error2);
+                                            }
                                         }
                                     }
+                                    else
+                                    {
+                                        // global_play_status == PLAY_PAUSED
+                                    }
                                 }
-                                else
-                                {
-                                    // global_play_status == PLAY_PAUSED
-                                }
+                                av_frame_unref(frame2);
                             }
-                            av_frame_unref(frame);
                         }
+
+#endif
+
+                        // --------------------
+                        // --------------------
+                        // ---- Background ----
+                        // --------------------
+                        // --------------------
+
+
+
+
                     }
                 }
+                av_packet_unref(&packet);
             }
-            av_packet_unref(&packet);
+            else
+            {
+                fprintf(stderr, "Should not get here\n");
+            }
         }
 
         if (ffmpeg_thread_video_stop != 1)
