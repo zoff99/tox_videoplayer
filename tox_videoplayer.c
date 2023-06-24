@@ -136,6 +136,9 @@ int64_t audio_start_time = 0;
 int global_audio_delay_factor = 0;
 int global_video_delay_factor = 7; // default video delay of 7 * 50 (= 350m) to audio
 pthread_mutex_t time___mutex;
+pthread_mutex_t vscale___mutex;
+pthread_mutex_t vsend___mutex;
+int vsend_thread_count = 0;
 #define PLAY_PAUSED 0
 #define PLAY_PLAYING 1
 static int global_need_video_seek = 0;
@@ -1065,9 +1068,6 @@ struct vsend_data {
     AVFrame* frame2;
     AVCodecContext *video_codec_ctx;
     AVFormatContext *format_ctx;
-    uint8_t *dst_yuv_buffer_0;
-    uint8_t *dst_yuv_buffer_1;
-    uint8_t *dst_yuv_buffer_2;
     int64_t video_start_time;
     int desktop_mode;
     int http_mode;
@@ -1075,6 +1075,7 @@ struct vsend_data {
     int video_position_percent;
     int video_stream_index;
     int64_t ms_desktop_pin;
+    uint8_t *dst_yuv_buffer[3];
 };
 
 static void *thread_v_send_bg_func(void *data)
@@ -1086,10 +1087,6 @@ static void *thread_v_send_bg_func(void *data)
     AVFrame* frame2 = vs->frame2;
     AVCodecContext *video_codec_ctx = vs->video_codec_ctx;
     AVFormatContext *format_ctx = vs->format_ctx;
-    uint8_t *dst_yuv_buffer[3];
-    dst_yuv_buffer[0] = vs->dst_yuv_buffer_0;
-    dst_yuv_buffer[1] = vs->dst_yuv_buffer_1;
-    dst_yuv_buffer[2] = vs->dst_yuv_buffer_2;
     int64_t video_start_time = vs->video_start_time;
     int desktop_mode = vs->desktop_mode;
     int http_mode = vs->http_mode;
@@ -1098,158 +1095,100 @@ static void *thread_v_send_bg_func(void *data)
     int video_stream_index = vs->video_stream_index;
     int64_t ms_desktop_pin = vs->ms_desktop_pin;
 
+    // Convert the video frame to YUV
+    int planes_stride[3];
+    planes_stride[0] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 0);
+    planes_stride[1] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 1);
+    planes_stride[2] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 2);
 
-                            // Convert the video frame to YUV
-                            int planes_stride[3];
-                            planes_stride[0] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 0);
-                            planes_stride[1] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 1);
-                            planes_stride[2] = av_image_get_linesize(AV_PIX_FMT_YUV420P, output_width, 2);
-                            // fprintf(stderr, "VideoFrame:strides:%d %d %d\n",planes_stride[0],planes_stride[1],planes_stride[2]);
+    uint8_t *yuv_buffer = (uint8_t *)av_malloc(av_image_get_buffer_size(AV_PIX_FMT_YUV420P,
+            output_width, output_height, 1));
+    if (yuv_buffer == NULL) {
+        fprintf(stderr, "Error: could not allocate YUV buffer\n");
 
-                            sws_scale(scaler_ctx, (const uint8_t * const*)frame2->data, frame2->linesize, 0, video_codec_ctx->height,
-                                    dst_yuv_buffer, planes_stride);
+        av_frame_unref(frame2);
+        free(vs);
+        pthread_mutex_lock(&vsend___mutex);
+        vsend_thread_count--;
+        if (vsend_thread_count < 0)
+        {
+            vsend_thread_count = 0;
+        }
+        pthread_mutex_unlock(&vsend___mutex);
 
-                            int64_t pts = frame2->pts;
-                            int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
-                            if (labs(video_start_time) > 2000)
-                            {
-                                ms = ms - video_start_time;
-                            }
-                            //**// printf("PTS: %ld / %ld, Time Base: %d/%d, Milliseconds: %ld\n", global_pts, pts, time_base_video.num, time_base_video.den, ms);
-                            // printf("TS: frame %ld %ld\n", global_pts, ms);
+        return NULL;
+    }
 
-                            if ((desktop_mode == 1) || (ms > (int64_t)1000*(int64_t)1000*(int64_t)1000*(int64_t)1000))
-                            {
-                                ms = global_pts;
-                                // printf("timestamps broken, just play\n");
-                            }
-                            else if (http_mode == 1)
-                            {
-                                ms = global_pts;
-                            }
-                            else
-                            {
-                                if (video_length > 0)
-                                {
-                                    // int64_t current_time = av_gettime() - video_av_starttime;
-                                    // int64_t video_cur_position_ms = current_time * video_time_base_den / AV_TIME_BASE;
-                                    const int percent_new = (int)calculate_percentage(ms, video_length);
-                                    if (percent_new != video_position_percent)
-                                    {
-                                        video_position_percent = percent_new;
-                                        draw_percent_bar(video_position_percent, false);
-                                    }
-#if 0
-                                    printf("curpos:%ld / %ld %d\n",
-                                            ms, video_length,
-                                            video_position_percent);
-                                    int64_t milliseconds = ms % 1000;
-                                    int64_t seconds = (ms / 1000) % 60;
-                                    int64_t minutes = (ms / (1000 * 60)) % 60;
-                                    int64_t hours = (ms / (1000 * 60 * 60)) % 24;
-                                    char time_string[20];
-                                    snprintf(time_string, sizeof(time_string), "%02ld:%02ld:%02ld.%03ld", hours, minutes, seconds, milliseconds);
-                                    printf("Current position: %s\n", time_string);
-#endif
-                                }
-                            }
+    uint8_t *dst_yuv_buffer[3];
+    dst_yuv_buffer[0] = yuv_buffer;
+    dst_yuv_buffer[1] = yuv_buffer + (output_width * output_height);
+    dst_yuv_buffer[2] = dst_yuv_buffer[1] + ((output_width * output_height) / 4);
 
-                            if (global_need_video_seek != 0)
-                            {
-                                global_need_video_seek = 0;
-                                av_frame_unref(frame2);
-                                int seek_res = seek_stream(format_ctx, video_codec_ctx, video_stream_index);
-                                fprintf(stderr, "seek frame res:%d\n", seek_res);
-                                show_seek_forward();
-                            }
-                            else
-                            {
-                                bool cond = (global_play_status == PLAY_PLAYING) && ((ms + 600) < global_pts);
-                                if (cond)
-                                {
-                                    // skip frames, we are seeking forward most likely
-                                    av_frame_unref(frame2);
-                                    //int seek_res = seek_stream(format_ctx, video_codec_ctx, video_stream_index);
-                                    // fprintf(stderr, "SKIP frame %d %ld %ld\n", global_play_status, ms, global_pts);
-                                    show_seek_forward();
-                                }
-                                else
-                                {
-                                    int counter = 0;
-                                    const int sleep_ms = 4;
-                                    const int one_sec_ms = 1000;
+    pthread_mutex_lock(&vscale___mutex);
+    sws_scale(scaler_ctx, (const uint8_t * const*)frame2->data, frame2->linesize, 0, video_codec_ctx->height,
+            dst_yuv_buffer, planes_stride);
+    pthread_mutex_unlock(&vscale___mutex);
 
-                                    int delay_add = 0;
-                                    if (desktop_mode == 0)
-                                    {
-                                        // video delay only works on real files
-                                        delay_add = global_video_delay_factor * 50;
-                                    }
+    int64_t ms = global_pts;
+
+    int counter = 0;
+    const int sleep_ms = 4;
+    const int one_sec_ms = 1000;
+    int delay_add = 0;
+
+    if (toxav != NULL)
+    {
+        if (global_play_status == PLAY_PLAYING)
+        {
+            uint32_t frame_age_ms = global_pts - ms_desktop_pin;
+            if (frame_age_ms < 0)
+            {
+                frame_age_ms = 0;
+            }
+            else if (frame_age_ms > 1000)
+            {
+                frame_age_ms = 1000;
+            }
+            // fprintf(stderr, "frame age:%d\n", frame_age_ms);
 
 
-                                    while ((global_play_status == PLAY_PAUSED) || ((ms + delay_add) > global_pts))
-                                    {
-                                        usleep(1000 * sleep_ms);
-                                        counter++;
-                                        if (counter > (one_sec_ms / sleep_ms))
-                                        {
-                                            // sleep for max. 1 second
-                                            break;
-                                        }
-                                    }
+            TOXAV_ERR_SEND_FRAME error2;
+            bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
+                        planes_stride[0], output_height,
+                        dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
+                        &error2, frame_age_ms);
 
-                                    if (toxav != NULL)
-                                    {
-                                        if (global_play_status == PLAY_PLAYING)
-                                        {
-                                            // fprintf(stderr, "frame h:%d %d\n", frame->height, output_height);
-                                            uint32_t frame_age_ms = 0;
-                                            if (desktop_mode == 1)
-                                            {
-                                                frame_age_ms = global_pts - ms_desktop_pin;
-                                                if (frame_age_ms < 0)
-                                                {
-                                                    frame_age_ms = 0;
-                                                }
-                                                else if (frame_age_ms > 1000)
-                                                {
-                                                    frame_age_ms = 1000;
-                                                }
-                                                // fprintf(stderr, "frame age:%d\n", frame_age_ms);
-                                            }
-                                            TOXAV_ERR_SEND_FRAME error2;
-                                            bool ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
-                                                        planes_stride[0], output_height,
-                                                        dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
-                                                        &error2, frame_age_ms);
+            if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+            {
+                fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying ...\n", (int)ret2, error2);
+                yieldcpu(1);
+                frame_age_ms = 1;
+                ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
+                            planes_stride[0], output_height,
+                            dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
+                            &error2, frame_age_ms);
+                if (error2 != TOXAV_ERR_SEND_FRAME_OK)
+                {
+                    fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying -> FAILED\n", (int)ret2, error2);
+                }
+            }
+        }
+        else
+        {
+            // global_play_status == PLAY_PAUSED
+        }
+    }
 
-                                            if (error2 != TOXAV_ERR_SEND_FRAME_OK)
-                                            {
-                                                fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying ...\n", (int)ret2, error2);
-                                                yieldcpu(1);
-                                                frame_age_ms = 1;
-                                                ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
-                                                            planes_stride[0], output_height,
-                                                            dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
-                                                            &error2, frame_age_ms);
-                                                if (error2 != TOXAV_ERR_SEND_FRAME_OK)
-                                                {
-                                                    fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying -> FAILED\n", (int)ret2, error2);
-                                                }
-                                            }
-                                        }
-                                        else
-                                        {
-                                            // global_play_status == PLAY_PAUSED
-                                        }
-                                    }
-                                    av_frame_unref(frame2);
-                                }
-                            }
-
-
-free(vs);
-
+    av_free(yuv_buffer);
+    av_frame_unref(frame2);
+    free(vs);
+    pthread_mutex_lock(&vsend___mutex);
+    vsend_thread_count--;
+    if (vsend_thread_count < 0)
+    {
+        vsend_thread_count = 0;
+    }
+    pthread_mutex_unlock(&vsend___mutex);
     return NULL;
 }
 
@@ -1552,9 +1491,9 @@ static void *ffmpeg_thread_video_func(void *data)
                             vs->frame2 = frame2;
                             vs->video_codec_ctx = video_codec_ctx;
                             vs->format_ctx = format_ctx;
-                            vs->dst_yuv_buffer_0 = dst_yuv_buffer[0];
-                            vs->dst_yuv_buffer_1 = dst_yuv_buffer[1];
-                            vs->dst_yuv_buffer_2 = dst_yuv_buffer[2];
+                            vs->dst_yuv_buffer[0] = dst_yuv_buffer[0];
+                            vs->dst_yuv_buffer[1] = dst_yuv_buffer[1];
+                            vs->dst_yuv_buffer[2] = dst_yuv_buffer[2];
                             vs->video_start_time = video_start_time;
                             vs->desktop_mode = desktop_mode;
                             vs->http_mode = http_mode;
@@ -1563,17 +1502,32 @@ static void *ffmpeg_thread_video_func(void *data)
                             vs->video_stream_index = video_stream_index;
                             vs->ms_desktop_pin = ms_desktop_pin;
 
+                            bool vsend_thread_spawn = 1;
                             pthread_t thread_v_send_bg;
-                            if (pthread_create(&thread_v_send_bg, NULL, thread_v_send_bg_func, (void *)vs) != 0)
+                            pthread_mutex_lock(&vsend___mutex);
+                            if (vsend_thread_count > 3)
                             {
-                                printf("VSend Thread create failed\n");
+                                vsend_thread_spawn = 0;
                             }
-                            else
+                            pthread_mutex_unlock(&vsend___mutex);
+                            if (vsend_thread_spawn == 1)
                             {
-                                pthread_setname_np(thread_v_send_bg, "t_vsend");
-                                if (pthread_detach(thread_v_send_bg))
+                                if (pthread_create(&thread_v_send_bg, NULL, thread_v_send_bg_func, (void *)vs) != 0)
                                 {
-                                    printf("error detaching VSend Thread\n");
+                                    printf("VSend Thread create failed\n");
+                                }
+                                else
+                                {
+                                    pthread_mutex_lock(&vsend___mutex);
+                                    vsend_thread_count++;
+                                    // printf("vsend_thread_count:%d\n", vsend_thread_count);
+                                    pthread_mutex_unlock(&vsend___mutex);
+                                    pthread_setname_np(thread_v_send_bg, "t_vsend");
+                                    if (pthread_detach(thread_v_send_bg))
+                                    {
+                                        printf("error detaching VSend Thread\n");
+                                    }
+                                    // pthread_join(thread_v_send_bg, NULL);
                                 }
                             }
                         }
@@ -1623,7 +1577,7 @@ static void *ffmpeg_thread_video_func(void *data)
                                         video_position_percent = percent_new;
                                         draw_percent_bar(video_position_percent, false);
                                     }
-    #if 0
+#if 0
                                     printf("curpos:%ld / %ld %d\n",
                                             ms, video_length,
                                             video_position_percent);
@@ -1634,7 +1588,7 @@ static void *ffmpeg_thread_video_func(void *data)
                                     char time_string[20];
                                     snprintf(time_string, sizeof(time_string), "%02ld:%02ld:%02ld.%03ld", hours, minutes, seconds, milliseconds);
                                     printf("Current position: %s\n", time_string);
-    #endif
+#endif
                                 }
                             }
 
@@ -2596,7 +2550,19 @@ int main(int argc, char *argv[])
 
     if (pthread_mutex_init(&time___mutex, NULL) != 0)
     {
-        fprintf(stderr, "Creating mutex failed\n");
+        fprintf(stderr, "Creating time mutex failed\n");
+        return 0;
+    }
+
+    if (pthread_mutex_init(&vscale___mutex, NULL) != 0)
+    {
+        fprintf(stderr, "Creating vscale mutex failed\n");
+        return 0;
+    }
+
+    if (pthread_mutex_init(&vsend___mutex, NULL) != 0)
+    {
+        fprintf(stderr, "Creating vsend mutex failed\n");
         return 0;
     }
 
@@ -2868,6 +2834,8 @@ int main(int argc, char *argv[])
     pthread_join(thread_time, NULL);
 
     pthread_mutex_destroy(&time___mutex);
+    pthread_mutex_destroy(&vscale___mutex);
+    pthread_mutex_destroy(&vsend___mutex);
 
     toxav_kill(toxav);
     printf("killed ToxAV\n");
