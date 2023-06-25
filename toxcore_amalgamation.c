@@ -17105,14 +17105,14 @@ bool toxav_video_send_frame(ToxAV *av, uint32_t friend_number, uint16_t width, u
  * @param v V (Chroma) plane data.
  */
 bool toxav_video_send_frame_age(ToxAV *av, uint32_t friend_number, uint16_t width, uint16_t height, const uint8_t *y,
-                            const uint8_t *u, const uint8_t *v, TOXAV_ERR_SEND_FRAME *error, uint32_t age_ms);
+                            const uint8_t *u, const uint8_t *v, TOXAV_ERR_SEND_FRAME *error, int32_t age_ms);
 
 
 bool toxav_video_send_frame_h264(ToxAV *av, uint32_t friend_number, uint16_t width, uint16_t height, const uint8_t *buf,
                                  uint32_t data_len, TOXAV_ERR_SEND_FRAME *error);
 
 bool toxav_video_send_frame_h264_age(ToxAV *av, uint32_t friend_number, uint16_t width, uint16_t height, const uint8_t *buf,
-                                 uint32_t data_len, TOXAV_ERR_SEND_FRAME *error, uint32_t age_ms);
+                                 uint32_t data_len, TOXAV_ERR_SEND_FRAME *error, int32_t age_ms);
 
 
 /**
@@ -74305,7 +74305,7 @@ void handle_rtp_packet(Tox *tox, uint32_t friendnumber, const uint8_t *data, siz
                         ((VCSession *)(session->cs))->h264_video_capabilities_received = 1;
                     }
                 }
-            } else if ((data[1] == PACKET_TOXAV_COMM_CHANNEL_DUMMY_NTP_REQUEST) && (length == 6)) {
+            } else if ((data[1] == PACKET_TOXAV_COMM_CHANNEL_DUMMY_NTP_REQUEST) && (length == 14)) {
 
                 uint32_t pkg_buf_len = (sizeof(uint32_t) * 3) + 2;
                 uint8_t pkg_buf[pkg_buf_len];
@@ -74328,6 +74328,7 @@ void handle_rtp_packet(Tox *tox, uint32_t friendnumber, const uint8_t *data, siz
                 pkg_buf[13] = tmp       & 0xFF;
 
                 int result = rtp_send_custom_lossless_packet(tox, friendnumber, pkg_buf, pkg_buf_len);
+                LOGGER_API_DEBUG(tox, "TTTTTR:002:result=%d pkg_buf_len=%d", result, pkg_buf_len);
 
             } else if ((data[1] == PACKET_TOXAV_COMM_CHANNEL_DUMMY_NTP_ANSWER) && (length == 14)) {
 
@@ -74362,6 +74363,12 @@ void handle_rtp_packet(Tox *tox, uint32_t friendnumber, const uint8_t *data, siz
 
 #define NETWORK_ROUND_TRIP_MAX_VALID_MS 800
 
+                LOGGER_API_DEBUG(tox, "TTTTTR:data:le:%d ls:%d delta=%d",
+                    (int32_t)((VCSession *)(session->cs))->dummy_ntp_local_end,
+                    (int32_t)((VCSession *)(session->cs))->dummy_ntp_local_start,
+                    ( (int32_t)((VCSession *)(session->cs))->dummy_ntp_local_end - (int32_t)((VCSession *)(session->cs))->dummy_ntp_local_start )
+                    );
+
                 if (
                     (( (int32_t)((VCSession *)(session->cs))->dummy_ntp_local_end - (int32_t)((VCSession *)(session->cs))->dummy_ntp_local_start ) > NETWORK_ROUND_TRIP_MAX_VALID_MS)
                      ||
@@ -74372,7 +74379,7 @@ void handle_rtp_packet(Tox *tox, uint32_t friendnumber, const uint8_t *data, siz
                                           ((VCSession *)(session->cs))->dummy_ntp_remote_end,
                                           ((VCSession *)(session->cs))->dummy_ntp_local_start,
                                           ((VCSession *)(session->cs))->dummy_ntp_local_end);
-
+                    LOGGER_API_DEBUG(tox, "TTTTTR:too long");
                 }
                 else
                 {
@@ -74405,6 +74412,7 @@ void handle_rtp_packet(Tox *tox, uint32_t friendnumber, const uint8_t *data, siz
                     }
 
                     ((VCSession *)(session->cs))->has_rountrip_time_ms = 1;
+                    LOGGER_API_DEBUG(tox, "TTTTTR:ok__:value=%d", (int)(((VCSession *)(session->cs))->has_rountrip_time_ms));
                     int64_t *ptmp = &(((VCSession *)(session->cs))->timestamp_difference_to_sender__for_video);
                     bool res4 = dntp_drift(ptmp, offset_, (int64_t)NETWORK_NTP_JUMP_MS, (int)NETWORK_ROUND_TRIP_CHANGE_THRESHOLD_MS);
                 }
@@ -76373,20 +76381,28 @@ bool toxav_video_send_frame(ToxAV *av, uint32_t friend_number, uint16_t width, u
 }
 
 bool toxav_video_send_frame_age(ToxAV *av, uint32_t friend_number, uint16_t width, uint16_t height, const uint8_t *y,
-                                const uint8_t *u, const uint8_t *v, TOXAV_ERR_SEND_FRAME *error, uint32_t age_ms)
+                                const uint8_t *u, const uint8_t *v, TOXAV_ERR_SEND_FRAME *error, int32_t age_ms)
 {
     TOXAV_ERR_SEND_FRAME rc = TOXAV_ERR_SEND_FRAME_OK;
     ToxAVCall *call;
 
     // add the time the data has already aged (in the client)
     uint64_t video_frame_record_timestamp = 0;
-    if (current_time_monotonic(av->toxav_mono_time) <= (uint64_t)age_ms)
+    uint64_t mono_now = current_time_monotonic(av->toxav_mono_time);
+    if (age_ms <= 0)
     {
-        video_frame_record_timestamp = current_time_monotonic(av->toxav_mono_time);
+        video_frame_record_timestamp = mono_now - age_ms;
     }
     else
     {
-        video_frame_record_timestamp = current_time_monotonic(av->toxav_mono_time) - age_ms;
+        if (mono_now <= age_ms)
+        {
+            video_frame_record_timestamp = mono_now;
+        }
+        else
+        {
+            video_frame_record_timestamp = mono_now - age_ms;
+        }
     }
 
     if (toxav_friend_exists(av->tox, friend_number) == 0) {
@@ -76687,23 +76703,30 @@ bool toxav_video_send_frame_h264(ToxAV *av, uint32_t friend_number, uint16_t wid
 
 bool toxav_video_send_frame_h264_age(ToxAV *av, uint32_t friend_number, uint16_t width, uint16_t height,
                                      const uint8_t *buf,
-                                     uint32_t data_len, TOXAV_ERR_SEND_FRAME *error, uint32_t age_ms)
+                                     uint32_t data_len, TOXAV_ERR_SEND_FRAME *error, int32_t age_ms)
 {
     TOXAV_ERR_SEND_FRAME rc = TOXAV_ERR_SEND_FRAME_OK;
     ToxAVCall *call;
 
     // add the time the data has already aged (in the client)
     uint64_t video_frame_record_timestamp;
-    if (current_time_monotonic(av->toxav_mono_time) <= (uint64_t)age_ms)
+    uint64_t mono_now = current_time_monotonic(av->toxav_mono_time);
+    if (age_ms < 0)
     {
-        video_frame_record_timestamp = current_time_monotonic(av->toxav_mono_time);
+        video_frame_record_timestamp = mono_now - age_ms;
     }
     else
     {
-        video_frame_record_timestamp = current_time_monotonic(av->toxav_mono_time) - age_ms;
-        LOGGER_API_DEBUG(av->tox, "toxav_video_send_frame_h264_age:age_ms=%d", age_ms);
+        if (mono_now <= age_ms)
+        {
+            video_frame_record_timestamp = mono_now;
+        }
+        else
+        {
+            video_frame_record_timestamp = mono_now - age_ms;
+            LOGGER_API_DEBUG(av->tox, "toxav_video_send_frame_h264_age:age_ms=%d", age_ms);
+        }
     }
-
 
     if (toxav_friend_exists(av->tox, friend_number) == 0) {
         rc = TOXAV_ERR_SEND_FRAME_FRIEND_NOT_FOUND;
@@ -78670,7 +78693,13 @@ uint8_t vc_iterate(VCSession *vc, Tox *tox, uint8_t skip_video_flag, uint64_t *a
         tsb_range_ms_used = UINT32_MAX;
         timestamp_want_get_used = UINT32_MAX;
         use_range_all = 1;
-        LOGGER_API_DEBUG(tox,"first_frame:001:timestamp_want_get_used:002=%d", (int)timestamp_want_get_used);
+        LOGGER_API_DEBUG(tox,"first_frame:001a: %d %d %d %d",
+                (int)global_do_not_sync_av,
+                (int)vc->video_received_first_frame,
+                (int)vc->has_rountrip_time_ms,
+                (int)video_frame_diff
+                );
+        LOGGER_API_DEBUG(tox,"first_frame:001b:timestamp_want_get_used:002=%d", (int)timestamp_want_get_used);
     }
 
     if (use_range_all == 1)
