@@ -73,7 +73,7 @@
 #include <sodium/utils.h>
 
 // define this before including toxcore amalgamation -------
-#define MIN_LOGGER_LEVEL LOGGER_LEVEL_WARNING
+#define MIN_LOGGER_LEVEL LOGGER_LEVEL_WARNING // LOGGER_LEVEL_DEBUG
 #define HW_CODEC_CONFIG_UTOX_UB81
 // #define HW_CODEC_CONFIG_TBW_LINNVENC
 #define HW_CODEC_CONFIG_HIGHVBITRATE
@@ -99,6 +99,10 @@ static const char global_tox_vplayer_version_string[] = "0.99.5";
 
 #define DEFAULT_GLOBAL_AUD_BITRATE 128 // kbit/sec
 #define DEFAULT_GLOBAL_VID_BITRATE 8000 // kbit/sec
+int GLOBAL_VID_BITRATE_var = DEFAULT_GLOBAL_VID_BITRATE;
+int vbr = 0;
+int max_video_bitrate = 8000;
+int max_video_bitrate_set = 0;
 #define DEFAULT_SCREEN_CAPTURE_FPS "30" // 30 fps desktop screen capture
 #define DEFAULT_SCREEN_CAPTURE_PULSE_DEVICE "default" // default pulse device is called "default"
 
@@ -163,9 +167,43 @@ struct Node1 {
     uint16_t tcp_port;
 } nodes1[] = {
 { "2604:a880:1:20::32f:1001", "BEF0CFB37AF874BD17B9A8F9FE64C75521DB95A37D33C5BDB00E9CF58659C04F", 33445, 33445 },
-{ "tox.kurnevsky.net", "82EF82BA33445A1F91A7DB27189ECFC0C013E06E3DA71F588ED692BED625EC23", 33445, 33445 },
-{ "tox1.mf-net.eu","B3E5FA80DC8EBD1149AD2AB35ED8B85BD546DEDE261CA593234C619249419506",33445,33445},
-{ "tox3.plastiras.org","4B031C96673B6FF123269FF18F2847E1909A8A04642BBECD0189AC8AEEADAF64",33445,3389},
+{ "46.101.197.175", "CD133B521159541FB1D326DE9850F5E56A6C724B5B8E5EB5CD8D950408E95707", 33445, 3389 },
+{ "144.217.167.73","7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C",33445,33445},
+{ "tox1.mf-net.eu", "B3E5FA80DC8EBD1149AD2AB35ED8B85BD546DEDE261CA593234C619249419506", 33445, 3389 },
+{ "bg.tox.dcntrlzd.network", "20AD2A54D70E827302CDF5F11D7C43FA0EC987042C36628E64B2B721A1426E36", 33445, 33445 },
+{"91.219.59.156","8E7D0B859922EF569298B4D261A8CCB5FEA14FB91ED412A7603A585A25698832",33445,33445},
+{"85.143.221.42","DA4E4ED4B697F2E9B000EEFE3A34B554ACD3F45F5C96EAEA2516DD7FF9AF7B43",33445,33445},
+{"tox.initramfs.io","3F0A45A268367C1BEA652F258C85F4A66DA76BCAA667A49E770BCC4917AB6A25",33445,33445},
+{"144.217.167.73","7E5668E0EE09E19F320AD47902419331FFEE147BB3606769CFBE921A2A2FD34C",33445,33445},
+{"tox.abilinski.com","10C00EB250C3233E343E2AEBA07115A5C28920E9C8D29492F6D00B29049EDC7E",33445,33445},
+{"tox.novg.net","D527E5847F8330D628DAB1814F0A422F6DC9D0A300E6C357634EE2DA88C35463",33445,33445},
+{"198.199.98.108","BEF0CFB37AF874BD17B9A8F9FE64C75521DB95A37D33C5BDB00E9CF58659C04F",33445,33445},
+{"tox.kurnevsky.net","82EF82BA33445A1F91A7DB27189ECFC0C013E06E3DA71F588ED692BED625EC23",33445,33445},
+{"81.169.136.229","E0DB78116AC6500398DDBA2AEEF3220BB116384CAB714C5D1FCD61EA2B69D75E",33445,33445},
+{"205.185.115.131","3091C6BEB2A993F1C6300C16549FABA67098FF3D62C6D253828B531470B53D68",53,53},
+{"bg.tox.dcntrlzd.network","20AD2A54D70E827302CDF5F11D7C43FA0EC987042C36628E64B2B721A1426E36",33445,33445},
+{"46.101.197.175","CD133B521159541FB1D326DE9850F5E56A6C724B5B8E5EB5CD8D950408E95707",33445,33445},
+{"tox1.mf-net.eu","B3E5FA80DC8EBD1149AD2AB35ED8B85BD546DEDE261CA593234C619249419506",33445,33445},
+{"tox2.mf-net.eu","70EA214FDE161E7432530605213F18F7427DC773E276B3E317A07531F548545F",33445,33445},
+{"195.201.7.101","B84E865125B4EC4C368CD047C72BCE447644A2DC31EF75BD2CDA345BFD310107",33445,33445},
+{"tox4.plastiras.org","836D1DA2BE12FE0E669334E437BE3FB02806F1528C2B2782113E0910C7711409",33445,33445},
+{"gt.sot-te.ch","F4F4856F1A311049E0262E9E0A160610284B434F46299988A9CB42BD3D494618",33445,33445},
+{"188.225.9.167","1911341A83E02503AB1FD6561BD64AF3A9D6C3F12B5FBB656976B2E678644A67",33445,33445},
+{"122.116.39.151","5716530A10D362867C8E87EE1CD5362A233BAFBBA4CF47FA73B7CAD368BD5E6E",33445,33445},
+{"195.123.208.139","534A589BA7427C631773D13083570F529238211893640C99D1507300F055FE73",33445,33445},
+{"tox3.plastiras.org","4B031C96673B6FF123269FF18F2847E1909A8A04642BBECD0189AC8AEEADAF64",33445,33445},
+{"104.225.141.59","933BA20B2E258B4C0D475B6DECE90C7E827FE83EFA9655414E7841251B19A72C",43334,43334},
+{"139.162.110.188","F76A11284547163889DDC89A7738CF271797BF5E5E220643E97AD3C7E7903D55",33445,33445},
+{"198.98.49.206","28DB44A3CEEE69146469855DFFE5F54DA567F5D65E03EFB1D38BBAEFF2553255",33445,33445},
+{"172.105.109.31","D46E97CF995DC1820B92B7D899E152A217D36ABE22730FEA4B6BF1BFC06C617C",33445,33445},
+{"ru.tox.dcntrlzd.network","DBB2E896990ECC383DA2E68A01CA148105E34F9B3B9356F2FE2B5096FDB62762",33445,33445},
+{"91.146.66.26","B5E7DAC610DBDE55F359C7F8690B294C8E4FCEC4385DE9525DBFA5523EAD9D53",33445,33445},
+{"tox01.ky0uraku.xyz","FD04EB03ABC5FC5266A93D37B4D6D6171C9931176DC68736629552D8EF0DE174",33445,33445},
+{"tox02.ky0uraku.xyz","D3D6D7C0C7009FC75406B0A49E475996C8C4F8BCE1E6FC5967DE427F8F600527",33445,33445},
+{"tox.plastiras.org","8E8B63299B3D520FB377FE5100E65E3322F7AE5B20A0ACED2981769FC5B43725",33445,33445},
+{"kusoneko.moe","BE7ED53CD924813507BA711FD40386062E6DC6F790EFA122C78F7CDEEE4B6D1B",33445,33445},
+{"tox2.plastiras.org","B6626D386BE7E3ACA107B46F48A5C4D522D29281750D44A0CBA6A2721E79C951",33445,33445},
+{"172.104.215.182","DA2BD927E01CD05EBCC2574EBE5BEBB10FF59AE0B2105A7D1E2B40E49BB20239",33445,33445},
     { NULL, NULL, 0, 0 }
 };
 
@@ -455,12 +493,12 @@ static void call_state_callback(ToxAV *av, uint32_t friend_number, uint32_t stat
 static void call_callback(ToxAV *av, uint32_t friend_number, bool audio_enabled, bool video_enabled, void *user_data)
 {
     TOXAV_ERR_ANSWER error;
-    bool res = toxav_answer(av, friend_number, DEFAULT_GLOBAL_AUD_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, &error);
+    bool res = toxav_answer(av, friend_number, DEFAULT_GLOBAL_AUD_BITRATE, GLOBAL_VID_BITRATE_var, &error);
     if (error == TOXAV_ERR_ANSWER_OK)
     {
         friend_in_call = 1;
         printf("incoming ToxAV Call from fn=%d answered OK audio_enabled=%d video_enabled=%d a=%d v=%d\n",
-                friend_number, (int)audio_enabled, (int)video_enabled, DEFAULT_GLOBAL_AUD_BITRATE, DEFAULT_GLOBAL_VID_BITRATE);
+                friend_number, (int)audio_enabled, (int)video_enabled, DEFAULT_GLOBAL_AUD_BITRATE, GLOBAL_VID_BITRATE_var);
     }
     else
     {
@@ -529,18 +567,31 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
     else if (comm_value == TOXAV_CALL_COMM_ENCODER_CURRENT_BITRATE)
     {
         printf("ToxAV COMM: ENCODER_CURRENT_BITRATE=%ld\n", comm_number);
-        if (comm_number < 400)
+        if ((vbr == 1) && (max_video_bitrate != 8000) && (max_video_bitrate_set == 0))
         {
+            max_video_bitrate_set = 1;
             TOXAV_ERR_OPTION_SET error2;
-            toxav_option_set(av, global_friend_num, TOXAV_ENCODER_VIDEO_MIN_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, &error2);
+            toxav_option_set(av, global_friend_num, TOXAV_ENCODER_VIDEO_MAX_BITRATE, max_video_bitrate, &error2);
+            printf("ToxAV COMM: setting max. video bitrate to %d\n", max_video_bitrate);
+        }
+        else
+        {
+            if (comm_number < 400)
+            {
+                if ((vbr == 0) && (max_video_bitrate == 8000))
+                {
+                    TOXAV_ERR_OPTION_SET error2;
+                    toxav_option_set(av, global_friend_num, TOXAV_ENCODER_VIDEO_MIN_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, &error2);
 
-            Toxav_Err_Bit_Rate_Set error;
-            toxav_video_set_bit_rate(av, global_friend_num, DEFAULT_GLOBAL_VID_BITRATE, &error);
+                    Toxav_Err_Bit_Rate_Set error;
+                    toxav_video_set_bit_rate(av, global_friend_num, DEFAULT_GLOBAL_VID_BITRATE, &error);
 
-            TOXAV_ERR_OPTION_SET error3;
-            toxav_option_set(av, global_friend_num, TOXAV_ENCODER_VIDEO_MIN_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, &error3);
+                    TOXAV_ERR_OPTION_SET error3;
+                    toxav_option_set(av, global_friend_num, TOXAV_ENCODER_VIDEO_MIN_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, &error3);
 
-            printf("ToxAV COMM: setting video bitrate to %d\n", DEFAULT_GLOBAL_VID_BITRATE);
+                    printf("ToxAV COMM: setting video bitrate to %d\n", DEFAULT_GLOBAL_VID_BITRATE);
+                }
+            }
         }
     }
 }
@@ -2264,7 +2315,7 @@ static void *thread_key_func(void *data)
         else if (ch == 'c')
         {
             printf("KK:----- CALL  -----\n");
-            toxav_call(toxav, 0, DEFAULT_GLOBAL_AUD_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, NULL);
+            toxav_call(toxav, 0, DEFAULT_GLOBAL_AUD_BITRATE, GLOBAL_VID_BITRATE_var, NULL);
         }
         else if (ch == 'o')
         {
@@ -2449,7 +2500,7 @@ int main(int argc, char *argv[])
 
     char *input_file_arg_str = NULL;
     int opt;
-    const char     *short_opt = "bhvTti:p:f:x";
+    const char     *short_opt = "bhvTti:p:f:xrm:";
     struct option   long_opt[] =
     {
         {"help",          no_argument,       NULL, 'h'},
@@ -2477,6 +2528,21 @@ int main(int argc, char *argv[])
                 show_progress_bar = true;
                 break;
 
+            case 'r':
+                vbr = 1;
+                GLOBAL_VID_BITRATE_var = 200;
+                fprintf(stderr, "using VBR starting at: %d\n", GLOBAL_VID_BITRATE_var);
+                break;
+
+            case 'm':
+                max_video_bitrate = atoi(optarg);
+                if ((max_video_bitrate < 100) || (max_video_bitrate > 8000))
+                {
+                    max_video_bitrate = 8000;
+                }
+                fprintf(stderr, "max video bitrate: %d\n", max_video_bitrate);
+                break;
+
             case 'v':
                 printf("ToxVideoplayer version: %s\n", global_tox_vplayer_version_string);
                 return (0);
@@ -2486,6 +2552,8 @@ int main(int argc, char *argv[])
                 printf("  -t,                                  tcp only mode\n");
                 printf("  -T,                                  use tor proxy\n");
                 printf("  -i,                                  input filename or \"desktop\" to screenshare\n");
+                printf("  -r,                                  automatically adjust video bitrate\n");
+                printf("  -m,                                  set max. video bitrate\n");
                 printf("  -b,                                  show progress bar\n");
                 printf("  -p,                                  on \"desktop\" use this as pulse input device\n");
                 printf("                                           otherwise \"default\" is used\n");
@@ -2601,8 +2669,8 @@ int main(int argc, char *argv[])
     if (use_tor == 1)
     {
         printf("setting Tor Relay mode\n");
-        const char *proxy_host = "127.0.0.1\n";
-        printf("setting proxy_host %s", proxy_host);
+        const char *proxy_host = "127.0.0.1";
+        printf("setting proxy_host %s\n", proxy_host);
         uint16_t proxy_port = PROXY_PORT_TOR_DEFAULT;
         printf("setting proxy_port %d\n", (int)proxy_port);
         options.proxy_type = TOX_PROXY_TYPE_SOCKS5;
@@ -2646,13 +2714,15 @@ int main(int argc, char *argv[])
 
     change_term();
 
+    Tox_Err_New error_tox;
 #ifndef TOX_HAVE_TOXUTIL
     printf("init Tox\n");
-    Tox *tox = tox_new(&options, NULL);
+    Tox *tox = tox_new(&options, &error_tox);
 #else
     printf("init Tox [TOXUTIL]\n");
-    Tox *tox = tox_utils_new(&options, NULL);
+    Tox *tox = tox_utils_new(&options, &error_tox);
 #endif
+    printf("init Tox res:%d\n", error_tox);
 
     free(savedata);
 
@@ -2689,10 +2759,7 @@ int main(int argc, char *argv[])
     printf("Tox bootstrapping\n");
 
     // dummy node to bootstrap
-    if (use_tor == 0)
-    {
-        tox_bootstrap(tox, "local", 7766, (uint8_t *)"2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1", NULL);
-    }
+    tox_bootstrap(tox, "local", 7766, (uint8_t *)"2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1", NULL);
 
     for (int i = 0; nodes1[i].ip; i++)
     {
