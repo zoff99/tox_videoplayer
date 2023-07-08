@@ -41,7 +41,7 @@
   $(pkg-config --cflags --libs x11 libswresample opus vpx libavcodec libswscale libavformat libavdevice libavutil ) \
   -pthread -o tox_videoplayer
 
- * 
+ *
  */
 
 #define _GNU_SOURCE // NOLINT(bugprone-reserved-identifier)
