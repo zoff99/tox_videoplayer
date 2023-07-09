@@ -1027,7 +1027,7 @@ static int seek_stream(AVFormatContext *format_ctx_seek, AVCodecContext *codec_c
     // for that stream. Using AVSEEK_FLAG_BACKWARD to make sure we're 
     // always *before* requested timestamp.
     int err;
-    err = av_seek_frame(format_ctx_seek, stream_index, m_target_ts, AVSEEK_FLAG_ANY | AVSEEK_FLAG_BACKWARD);
+    err = av_seek_frame(format_ctx_seek, stream_index, m_target_ts, AVSEEK_FLAG_BACKWARD);
     fprintf(stderr, "seeking result: %s\n", av_err2str(err));
     return 0;
 }
