@@ -138,7 +138,7 @@ AVRational time_base_audio = (AVRational) {0, 0};
 AVRational time_base_video = (AVRational) {0, 0};
 int64_t audio_start_time = 0;
 int global_audio_delay_factor = 0;
-int global_video_delay_factor = 7; // default video delay of 7 * 50 (= 350m) to audio
+int global_video_delay_factor = 4; // default video delay of 4 * 50 (= 200ms) to audio
 pthread_mutex_t time___mutex;
 pthread_mutex_t vscale___mutex;
 pthread_mutex_t vsend___mutex;
