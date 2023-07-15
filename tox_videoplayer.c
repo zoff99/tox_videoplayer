@@ -1566,6 +1566,8 @@ static void *ffmpeg_thread_video_func(void *data)
                                 if (pthread_create(&thread_v_send_bg, NULL, thread_v_send_bg_func, (void *)vs) != 0)
                                 {
                                     printf("VSend Thread create failed\n");
+                                    av_frame_unref(frame2);
+                                    free(vs);
                                 }
                                 else
                                 {
@@ -1580,6 +1582,11 @@ static void *ffmpeg_thread_video_func(void *data)
                                     }
                                     // pthread_join(thread_v_send_bg, NULL);
                                 }
+                            }
+                            else
+                            {
+                                av_frame_unref(frame2);
+                                free(vs);
                             }
                         }
 
