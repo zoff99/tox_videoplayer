@@ -1191,7 +1191,11 @@ static void *thread_v_send_bg_func(void *data)
     {
         if (global_play_status == PLAY_PLAYING)
         {
-            uint32_t frame_age_ms = global_pts - ms_desktop_pin;
+            int64_t global_pts__ = av_gettime() / 1000;
+            uint32_t frame_age_ms = global_pts__ - ms_desktop_pin;
+            // fprintf(stderr, "__AGE__1:%ld\n", global_pts__);
+            // fprintf(stderr, "__AGE__2:%ld\n", ms_desktop_pin);
+            // fprintf(stderr, "__AGE__3:%u\n", frame_age_ms);
             if (frame_age_ms < 0)
             {
                 frame_age_ms = 0;
@@ -1213,7 +1217,7 @@ static void *thread_v_send_bg_func(void *data)
             {
                 fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying ...\n", (int)ret2, error2);
                 yieldcpu(1);
-                frame_age_ms = 1;
+                frame_age_ms++;
                 ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
                             planes_stride[0], output_height,
                             dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
@@ -1306,11 +1310,19 @@ static void *ffmpeg_thread_video_func(void *data)
         fprintf(stderr, "Display Screen capture FPS: %s\n", capture_fps);
 
         AVDictionary* options = NULL;
-        // set some options
+        // set some options ----------------------
+        //
         // grabbing frame rate
         av_dict_set(&options, "framerate", capture_fps, 0);
+        //
+        // TODO: make this an option
+        // do not capture the mouse pointer
+        av_dict_set(&options, "draw_mouse", "0", 0);
+        //
         // make the grabbed area follow the mouse
         // av_dict_set(&options, "follow_mouse", "centered", 0);
+        //
+        // set some options ----------------------
 
         const int resolution_string_len = 1000;
         char resolution_string[resolution_string_len];
@@ -1492,6 +1504,7 @@ static void *ffmpeg_thread_video_func(void *data)
             {
                 if (desktop_mode == 1)
                 {
+                    // TODO: use actual PTS from ffmpeg here
                     ms_desktop_pin = global_pts;
                 }
                 if (packet.stream_index == video_stream_index)
@@ -1528,6 +1541,17 @@ static void *ffmpeg_thread_video_func(void *data)
                         // ---- Background ----
                         // --------------------
                         // --------------------
+
+                        int64_t pts_ffmpeg = frame->best_effort_timestamp;
+                        // TODO test for AV_NOPTS_VALUE
+                        pts_ffmpeg = av_rescale_q(pts_ffmpeg,  format_ctx->streams[video_stream_index]->time_base, AV_TIME_BASE_Q);
+                        // pts is now in microseconds.
+                        // fprintf(stderr, "_____PTS______: %ld\n", (long)(pts_ffmpeg / 1000));
+
+                        if (desktop_mode == 1)
+                        {
+                            ms_desktop_pin = (pts_ffmpeg / 1000);
+                        }
 
                         AVFrame* frame2 = av_frame_clone(frame);
                         av_frame_unref(frame);
@@ -1607,6 +1631,7 @@ static void *ffmpeg_thread_video_func(void *data)
 
                             int64_t pts = frame2->pts;
                             int64_t ms = pts_to_ms(pts, time_base_video); // convert PTS to milliseconds
+                            // fprintf(stderr, "_____PTS___F__: %ld\n", (long)ms);
                             if (labs(video_start_time) > 2000)
                             {
                                 ms = ms - video_start_time;
@@ -1723,7 +1748,7 @@ static void *ffmpeg_thread_video_func(void *data)
                                             {
                                                 fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying ...\n", (int)ret2, error2);
                                                 yieldcpu(1);
-                                                frame_age_ms = 1;
+                                                frame_age_ms++;
                                                 ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
                                                             planes_stride[0], output_height,
                                                             dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
