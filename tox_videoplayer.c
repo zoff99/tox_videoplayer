@@ -91,8 +91,8 @@
 // ----------- version -----------
 #define TOX_VPLAYER_VERSION_MAJOR 0
 #define TOX_VPLAYER_VERSION_MINOR 99
-#define TOX_VPLAYER_VERSION_PATCH 5
-static const char global_tox_vplayer_version_string[] = "0.99.5";
+#define TOX_VPLAYER_VERSION_PATCH 6
+static const char global_tox_vplayer_version_string[] = "0.99.6";
 
 // ----------- version -----------
 // ----------- version -----------
