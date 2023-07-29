@@ -142,6 +142,7 @@ int global_video_delay_factor = 0; // default video delay of x * 50 (= YY ms) to
 pthread_mutex_t time___mutex;
 pthread_mutex_t vscale___mutex;
 pthread_mutex_t vsend___mutex;
+#define VIDEO_SEND_THREAD_COUNT_MAX 6
 int vsend_thread_count = 0;
 #define PLAY_PAUSED 0
 #define PLAY_PLAYING 1
@@ -1580,7 +1581,7 @@ static void *ffmpeg_thread_video_func(void *data)
                             bool vsend_thread_spawn = 1;
                             pthread_t thread_v_send_bg;
                             pthread_mutex_lock(&vsend___mutex);
-                            if (vsend_thread_count > 3)
+                            if (vsend_thread_count > VIDEO_SEND_THREAD_COUNT_MAX)
                             {
                                 vsend_thread_spawn = 0;
                             }
