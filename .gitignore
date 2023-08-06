@@ -5,3 +5,4 @@ savedata.tox
 *.mkv
 tox_videoplayer__*
 savedata.tox__BACKUP
+_ffmpeg_fix_.txt
