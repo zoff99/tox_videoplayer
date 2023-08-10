@@ -142,7 +142,7 @@ int global_video_delay_factor = 0; // default video delay of x * 50 (= YY ms) to
 pthread_mutex_t time___mutex;
 pthread_mutex_t vscale___mutex;
 pthread_mutex_t vsend___mutex;
-#define VIDEO_SEND_THREAD_COUNT_MAX 6
+#define VIDEO_SEND_THREAD_COUNT_MAX 10
 int vsend_thread_count = 0;
 #define PLAY_PAUSED 0
 #define PLAY_PLAYING 1
