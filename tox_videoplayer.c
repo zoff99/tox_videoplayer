@@ -1747,13 +1747,21 @@ static void *ffmpeg_thread_video_func(void *data)
 
                                             if (error2 != TOXAV_ERR_SEND_FRAME_OK)
                                             {
-                                                fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying ...\n", (int)ret2, error2);
-                                                yieldcpu(1);
-                                                frame_age_ms++;
-                                                ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
-                                                            planes_stride[0], output_height,
-                                                            dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
-                                                            &error2, frame_age_ms);
+                                                for (int retry=0;retry<5;retry++)
+                                                {
+                                                    fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying %d ...\n", (int)ret2, error2, (retry + 1));
+                                                    yieldcpu(1);
+                                                    frame_age_ms++;
+                                                    ret2 = toxav_video_send_frame_age(toxav, global_friend_num,
+                                                                planes_stride[0], output_height,
+                                                                dst_yuv_buffer[0], dst_yuv_buffer[1], dst_yuv_buffer[2],
+                                                                &error2, frame_age_ms);
+                                                    if (error2 == TOXAV_ERR_SEND_FRAME_OK)
+                                                    {
+                                                        break;
+                                                    }
+                                                }
+
                                                 if (error2 != TOXAV_ERR_SEND_FRAME_OK)
                                                 {
                                                     fprintf(stderr, "toxav_video_send_frame_age:%d %d -> retrying -> FAILED\n", (int)ret2, error2);
@@ -2124,30 +2132,34 @@ static void *ffmpeg_thread_audio_func(void *data)
                                     audio_delay_in_bytes = (out_samples * out_channels * out_bytes_per_sample) * global_audio_delay_factor; // n x 60 ms delay
                                     if (fifo_buffer_data_available(audio_pcm_buffer) >= (out_samples * out_channels * out_bytes_per_sample) + (audio_delay_in_bytes))
                                     {
+                                        uint32_t frame_age_ms = 0;
                                         // memset(buf, 0, temp_audio_buf_sizes);
                                         size_t read_bytes = fifo_buffer_read(audio_pcm_buffer, buf, out_samples * out_channels * out_bytes_per_sample);
                                         // printf("AA:read_bytes: %ld\n", read_bytes);
                                         Toxav_Err_Send_Frame error3;
-                                        toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
-                                                    out_channels, out_sample_rate, &error3);
+                                        toxav_audio_send_frame_age(toxav, global_friend_num, (const int16_t *)buf, out_samples,
+                                                    out_channels, out_sample_rate, &error3, frame_age_ms);
+
                                         if (error3 != TOXAV_ERR_SEND_FRAME_OK)
                                         {
-                                            fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d -> retrying ...\n",
-                                                error3, out_samples, out_channels, out_sample_rate);
-                                            toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
-                                                        out_channels, out_sample_rate, &error3);
-                                            if (error3 != TOXAV_ERR_SEND_FRAME_OK)
+                                            for (int retry=0;retry<5;retry++)
                                             {
-                                                fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d -> retrying again ...\n",
-                                                    error3, out_samples, out_channels, out_sample_rate);
+                                                fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d -> retrying %d ...\n",
+                                                    error3, out_samples, out_channels, out_sample_rate, (retry + 1));
                                                 yieldcpu(1);
+                                                frame_age_ms++;
                                                 toxav_audio_send_frame(toxav, global_friend_num, (const int16_t *)buf, out_samples,
                                                             out_channels, out_sample_rate, &error3);
-                                                if (error3 != TOXAV_ERR_SEND_FRAME_OK)
+                                                if (error3 == TOXAV_ERR_SEND_FRAME_OK)
                                                 {
-                                                    fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d -> retrying -> FAILED\n",
-                                                        error3, out_samples, out_channels, out_sample_rate);
+                                                    break;
                                                 }
+                                            }
+
+                                            if (error3 != TOXAV_ERR_SEND_FRAME_OK)
+                                            {
+                                                fprintf(stderr, "toxav_audio_send_frame:%d samples=%d channels=%d sr=%d -> retrying -> FAILED\n",
+                                                    error3, out_samples, out_channels, out_sample_rate);
                                             }
                                         }
                                     }
