@@ -91,8 +91,8 @@
 // ----------- version -----------
 #define TOX_VPLAYER_VERSION_MAJOR 0
 #define TOX_VPLAYER_VERSION_MINOR 99
-#define TOX_VPLAYER_VERSION_PATCH 6
-static const char global_tox_vplayer_version_string[] = "0.99.6";
+#define TOX_VPLAYER_VERSION_PATCH 7
+static const char global_tox_vplayer_version_string[] = "0.99.7";
 
 // ----------- version -----------
 // ----------- version -----------
@@ -129,10 +129,12 @@ static ToxAV *toxav = NULL;
 static const int global_friend_num = 0; // we always only use the first friend
 char *global_pulse_inputdevice_name = NULL;
 char *global_desktop_capture_fps = NULL;
+char* global_desktop_display_num_str = NULL;
 int global_osd_message_toggle = 0;
 int global_hdmifreq_toggle = 60;
 static bool main_loop_running;
 int need_free_global_pulse_inputdevice_name = 0;
+int need_free_global_desktop_display_num_str = 0;
 int need_free_global_desktop_capture_fps = 0;
 AVRational time_base_audio = (AVRational) {0, 0};
 AVRational time_base_video = (AVRational) {0, 0};
@@ -1335,8 +1337,14 @@ static void *ffmpeg_thread_video_func(void *data)
 
         AVInputFormat *ifmt = av_find_input_format("x11grab");
 
+        const int desktop_display_cap_str_len = 1000;
+        char desktop_display_cap_str[desktop_display_cap_str_len];
+        memset(desktop_display_cap_str, 0, desktop_display_cap_str_len);
+        snprintf(desktop_display_cap_str, desktop_display_cap_str_len, "%s+0,0", global_desktop_display_num_str);
+        fprintf(stderr, "Display capture_string: %s\n", desktop_display_cap_str);
+
         // example: grab at position 10,20 ":0.0+10,20"
-        if (avformat_open_input(&format_ctx, ":0.0+0,0", ifmt, &options) != 0)
+        if (avformat_open_input(&format_ctx, desktop_display_cap_str, ifmt, &options) != 0)
         {
             fprintf(stderr, "Could not open desktop as video input stream.\n");
             return NULL;
@@ -2545,7 +2553,7 @@ int main(int argc, char *argv[])
 
     char *input_file_arg_str = NULL;
     int opt;
-    const char     *short_opt = "bhvTti:p:f:xrm:";
+    const char     *short_opt = "bhvTti:d:p:f:xrm:";
     struct option   long_opt[] =
     {
         {"help",          no_argument,       NULL, 'h'},
@@ -2600,6 +2608,7 @@ int main(int argc, char *argv[])
                 printf("  -r,                                  automatically adjust video bitrate\n");
                 printf("  -m,                                  set max. video bitrate\n");
                 printf("  -b,                                  show progress bar\n");
+                printf("  -d,                                  which X11 display number for desktop capture\n");
                 printf("  -p,                                  on \"desktop\" use this as pulse input device\n");
                 printf("                                           otherwise \"default\" is used\n");
                 printf("  -f,                                  on \"desktop\" use this as capture FPS\n");
@@ -2633,6 +2642,16 @@ int main(int argc, char *argv[])
                 need_free_global_pulse_inputdevice_name = 1;
                 break;
 
+            case 'd':
+                global_desktop_display_num_str = strdup(optarg);
+                if (global_desktop_display_num_str == NULL)
+                {
+                    fprintf(stderr, "Error copying display device string\n");
+                    return (-3);
+                }
+                need_free_global_desktop_display_num_str = 1;
+                break;
+
             case ':':
             case '?':
                 fprintf(stderr, "Try `%s --help' for more information.\n", argv[0]);
@@ -2646,6 +2665,11 @@ int main(int argc, char *argv[])
     }
 
     printf("ToxVideoplayer version: %s\n", global_tox_vplayer_version_string);
+
+    if (global_desktop_display_num_str == NULL)
+    {
+        global_desktop_display_num_str = ":0.0";
+    }
 
     if (input_file_arg_str == NULL)
     {
