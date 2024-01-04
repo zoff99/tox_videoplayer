@@ -2827,9 +2827,6 @@ int main(int argc, char *argv[])
     // ----- bootstrap -----
     printf("Tox bootstrapping\n");
 
-    // dummy node to bootstrap
-    tox_bootstrap(tox, "local", 7766, (uint8_t *)"2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1", NULL);
-
     for (int i = 0; nodes1[i].ip; i++)
     {
         uint8_t *key = (uint8_t *)calloc(1, 100);
@@ -2839,10 +2836,7 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        if (use_tor == 0)
-        {
-            tox_bootstrap(tox, nodes1[i].ip, nodes1[i].udp_port, key, NULL);
-        }
+        tox_bootstrap(tox, nodes1[i].ip, nodes1[i].udp_port, key, NULL);
 
         if (nodes1[i].tcp_port != 0)
         {
