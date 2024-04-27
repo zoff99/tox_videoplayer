@@ -98,10 +98,10 @@ static const char global_tox_vplayer_version_string[] = "0.99.7";
 // ----------- version -----------
 
 #define DEFAULT_GLOBAL_AUD_BITRATE 128 // kbit/sec
-#define DEFAULT_GLOBAL_VID_BITRATE 8000 // kbit/sec
+#define DEFAULT_GLOBAL_VID_BITRATE 12000 // kbit/sec
 int GLOBAL_VID_BITRATE_var = DEFAULT_GLOBAL_VID_BITRATE;
 int vbr = 0;
-int max_video_bitrate = 8000;
+int max_video_bitrate = DEFAULT_GLOBAL_VID_BITRATE;
 int max_video_bitrate_set = 0;
 #define DEFAULT_SCREEN_CAPTURE_FPS "30" // 30 fps desktop screen capture
 #define DEFAULT_SCREEN_CAPTURE_PULSE_DEVICE "default" // default pulse device is called "default"
@@ -570,7 +570,7 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
     else if (comm_value == TOXAV_CALL_COMM_ENCODER_CURRENT_BITRATE)
     {
         printf("ToxAV COMM: ENCODER_CURRENT_BITRATE=%ld\n", comm_number);
-        if ((vbr == 1) && (max_video_bitrate != 8000) && (max_video_bitrate_set == 0))
+        if ((vbr == 1) && (max_video_bitrate != DEFAULT_GLOBAL_VID_BITRATE) && (max_video_bitrate_set == 0))
         {
             max_video_bitrate_set = 1;
             TOXAV_ERR_OPTION_SET error2;
@@ -581,7 +581,7 @@ static void call_comm_callback(ToxAV *av, uint32_t friend_number, TOXAV_CALL_COM
         {
             if (comm_number < 400)
             {
-                if ((vbr == 0) && (max_video_bitrate == 8000))
+                if ((vbr == 0) && (max_video_bitrate == DEFAULT_GLOBAL_VID_BITRATE))
                 {
                     TOXAV_ERR_OPTION_SET error2;
                     toxav_option_set(av, global_friend_num, TOXAV_ENCODER_VIDEO_MIN_BITRATE, DEFAULT_GLOBAL_VID_BITRATE, &error2);
@@ -2589,9 +2589,9 @@ int main(int argc, char *argv[])
 
             case 'm':
                 max_video_bitrate = atoi(optarg);
-                if ((max_video_bitrate < 100) || (max_video_bitrate > 8000))
+                if ((max_video_bitrate < 100) || (max_video_bitrate > DEFAULT_GLOBAL_VID_BITRATE))
                 {
-                    max_video_bitrate = 8000;
+                    max_video_bitrate = DEFAULT_GLOBAL_VID_BITRATE;
                 }
                 fprintf(stderr, "max video bitrate: %d\n", max_video_bitrate);
                 break;
