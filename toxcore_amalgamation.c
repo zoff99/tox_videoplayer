@@ -78718,6 +78718,7 @@ bool toxav_ngc_video_decode(void *vngc, uint8_t *encoded_frame_bytes, uint32_t e
 }
 
 #define NGC__AUDIO_OPUS_COMPLEXITY (10)
+#define NGC__AUDIO_OPUS_PACKET_LOSS_PERC (4)
 #define NGC__AUDIO_MAX_ENCODED_DATA_BYTES (TOX_MAX_CUSTOM_PACKET_SIZE - 1 - 10) // 10 bytes for NGC audio packet header
 #define NGC__AUDIO_MAX_PCM_DATA_BYTES (5760)
 
@@ -78764,6 +78765,9 @@ void* toxav_ngc_audio_init(const int32_t bit_rate, const int32_t sampling_rate, 
         opus_encoder_destroy(opus_encoder);
         ngc_audio_coders->ngc__opus_encoder = nullptr;
     }
+
+    status_enc = opus_encoder_ctl(opus_encoder, OPUS_SET_INBAND_FEC(1));
+    status_enc = opus_encoder_ctl(opus_encoder, OPUS_SET_PACKET_LOSS_PERC(NGC__AUDIO_OPUS_PACKET_LOSS_PERC));
 
     printf("starting audio encoder complexity: %d\n", (int)NGC__AUDIO_OPUS_COMPLEXITY);
     status_enc = opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(NGC__AUDIO_OPUS_COMPLEXITY));
@@ -89009,8 +89013,8 @@ bool tox_util_friend_resend_message_v2(Tox *tox, uint32_t friend_number,
                                           (const uint8_t *)filename, (size_t)strlen(filename),
                                           &error_send);
 
+    free(msgid);
     if ((file_num_new == UINT32_MAX) || (error_send != TOX_ERR_FILE_SEND_OK)) {
-        free(msgid);
         return false;
     }
 
@@ -89092,8 +89096,9 @@ bool tox_util_friend_send_sync_message_v2(Tox *tox, uint32_t friend_number,
                                           (const uint8_t *)filename, (size_t)strlen(filename),
                                           &error_send);
 
+    free(msgid);
+
     if ((file_num_new == UINT32_MAX) || (error_send != TOX_ERR_FILE_SEND_OK)) {
-        free(msgid);
         return false;
     }
 
@@ -89289,13 +89294,13 @@ int64_t tox_util_friend_send_message_v2(Tox *tox, uint32_t friend_number, TOX_ME
                     }
                 }
 
-                free(raw_message);
-                free(msgid);
-
                 if (error) {
                     *error = TOX_ERR_FRIEND_SEND_MESSAGE_OK;
                 }
             }
+
+            free(raw_message);
+            free(msgid);
 
             return -1;
         } else {
