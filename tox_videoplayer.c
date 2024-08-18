@@ -1450,10 +1450,13 @@ static void *ffmpeg_thread_video_func(void *data)
     dst_yuv_buffer[1] = yuv_buffer + (output_width * output_height);
     dst_yuv_buffer[2] = dst_yuv_buffer[1] + ((output_width * output_height) / 4);
 
-    // Create a scaler context to convert the video to YUV
+    // Create a scaler context to convert the video to YUV (and also scale it)
+    const int sws_scaler_flags = SWS_POINT; // worst quality, but best speed
+    // const int sws_scaler_flags = SWS_BILINEAR;
+    // const int sws_scaler_flags = SWS_BICUBIC;
     struct SwsContext *scaler_ctx = sws_getContext(video_codec_ctx->width, video_codec_ctx->height,
             video_codec_ctx->pix_fmt, output_width, output_height,
-            AV_PIX_FMT_YUV420P, SWS_POINT, NULL, NULL, NULL);
+            AV_PIX_FMT_YUV420P, sws_scaler_flags, NULL, NULL, NULL);
 
     if (scaler_ctx == NULL) {
         fprintf(stderr, "Error: could not create scaler context\n");
