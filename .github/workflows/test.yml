@@ -99,7 +99,7 @@ jobs:
           libswscale-dev \
           libx264-dev \
           libx11-dev \
-          libasan4
+          libasan6
 
       - name: compile binary
         run: |
