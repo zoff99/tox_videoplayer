@@ -58,7 +58,7 @@ jobs:
         run: |
           cp ./tox_videoplayer tox_videoplayer_nightly
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: tox_videoplayer_nightly
           path: tox_videoplayer_nightly
