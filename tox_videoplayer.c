@@ -91,8 +91,8 @@
 // ----------- version -----------
 #define TOX_VPLAYER_VERSION_MAJOR 0
 #define TOX_VPLAYER_VERSION_MINOR 99
-#define TOX_VPLAYER_VERSION_PATCH 7
-static const char global_tox_vplayer_version_string[] = "0.99.7";
+#define TOX_VPLAYER_VERSION_PATCH 8
+static const char global_tox_vplayer_version_string[] = "0.99.8";
 
 // ----------- version -----------
 // ----------- version -----------
@@ -1050,8 +1050,14 @@ static void print_codec_parameters_audio(AVCodecParameters *codecpar, const char
         printf("%sSample Format: %s\n", text_prefix, av_get_sample_fmt_name(codecpar->format));
     }
     printf("%sSample Rate: %d\n", text_prefix, codecpar->sample_rate);
+
+    // HINT: ffmpeg-libavcodec defines new ch_layout
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 24, 100)
+    printf("%sChannels: %d\n", text_prefix, codecpar->ch_layout.nb_channels);
+#else
     printf("%sChannels: %d\n", text_prefix, codecpar->channels);
     printf("%sChannel Layout: %ld\n", text_prefix, codecpar->channel_layout);
+#endif
     printf("%sBit Rate: %ld\n", text_prefix, codecpar->bit_rate);
     printf("%sBlock Align: %d\n", text_prefix, codecpar->block_align);
     printf("%sFrame Size: %d\n", text_prefix, codecpar->frame_size);
@@ -1842,7 +1848,12 @@ static void *ffmpeg_thread_audio_func(void *data)
     int ret;
     int desktop_mode = 0;
     const int out_channels = 2; // keep in sync with `out_channel_layout`
+
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 24, 100)
+    const AVChannelLayout out_channel_layout = AV_CHANNEL_LAYOUT_STEREO;
+#else
     const int out_channel_layout = AV_CH_LAYOUT_STEREO; // AV_CH_LAYOUT_MONO or AV_CH_LAYOUT_STEREO;
+#endif
     const int out_bytes_per_sample = 2; // 2 byte per PCM16 sample
     const int out_samples = 60 * 48; // X ms @ 48000Hz
     const int out_sample_rate = 48000; // fixed at 48000Hz
@@ -1956,6 +1967,9 @@ static void *ffmpeg_thread_audio_func(void *data)
 
     if (strncmp((char *)inputfile, "desktop", strlen((char *)"desktop")) == 0)
     {
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 24, 100)
+        // zzzzzzzz // audio_codec_ctx->ch_layout
+#else
         fprintf(stderr, "AA:audio_codec_ctx->channel_layout: %ld AV_CH_LAYOUT_STEREO: %lld default: %ld\n",
             audio_codec_ctx->channel_layout, (long long)AV_CH_LAYOUT_STEREO,
             av_get_default_channel_layout(audio_codec_ctx->channel_layout));
@@ -1964,6 +1978,7 @@ static void *ffmpeg_thread_audio_func(void *data)
             // HINT: no idea what to do here. just guess STEREO?
             audio_codec_ctx->channel_layout = AV_CH_LAYOUT_STEREO;
         }
+#endif
 
         fprintf(stderr, "AA:audio_codec_ctx->frame_size: %d\n",
             format_ctx->streams[audio_stream_index]->codecpar->frame_size);
@@ -1975,32 +1990,50 @@ static void *ffmpeg_thread_audio_func(void *data)
 
     fprintf(stderr, "AA:audio_codec_ctx->sample_rate: %d\n", format_ctx->streams[audio_stream_index]->codecpar->sample_rate);
 
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 24, 100)
+    swr_alloc_set_opts2(&swr_ctx,
+                                 &out_channel_layout, AV_SAMPLE_FMT_S16, out_sample_rate,
+                                 &audio_codec_ctx->ch_layout,
+                                 format_ctx->streams[audio_stream_index]->codecpar->format,
+                                 format_ctx->streams[audio_stream_index]->codecpar->sample_rate,
+                                 0, NULL);
+#else
     swr_ctx = swr_alloc_set_opts(NULL,
                                  out_channel_layout, AV_SAMPLE_FMT_S16, out_sample_rate,
                                  audio_codec_ctx->channel_layout,
                                  format_ctx->streams[audio_stream_index]->codecpar->format,
                                  format_ctx->streams[audio_stream_index]->codecpar->sample_rate,
                                  0, NULL);
+#endif
+
     if (!swr_ctx) {
         fprintf(stderr, "AA:Could not allocate resampler context\n");
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 24, 100)
+#else
         fprintf(stderr, "AA:%d %d %d %ld %d %d\n", out_channel_layout,
                 AV_SAMPLE_FMT_S16, out_sample_rate, audio_codec_ctx->channel_layout,
                 audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate);
+#endif
         return NULL; // 1;
     }
 
     if (swr_init(swr_ctx) < 0) {
         fprintf(stderr, "AA:Could not initialize resampler context\n");
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 24, 100)
+#else
         fprintf(stderr, "AA:%d %d %d %ld %d %d\n", out_channel_layout,
                 AV_SAMPLE_FMT_S16, out_sample_rate, audio_codec_ctx->channel_layout,
                 audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate);
+#endif
         return NULL; // 1;
     }
 
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 24, 100)
+#else
     fprintf(stderr, "AA:Audio Config:%d %d %d %ld %d %d\n", out_channel_layout,
             AV_SAMPLE_FMT_S16, out_sample_rate, audio_codec_ctx->channel_layout,
             audio_codec_ctx->sample_fmt, audio_codec_ctx->sample_rate);
-
+#endif
 
     // Wait for friend to come online
     while ((friend_online == 0) && (main_loop_running))
