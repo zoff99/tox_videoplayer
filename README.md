@@ -15,6 +15,12 @@ The application functions as both a media player and a broadcaster, processing m
 * Real-time: Multi-threaded architecture for concurrent video/audio processing and network transmission
 * Lightweight: Terminal-based interface with minimal dependencies
 
+### Format conversions:
+
+* Video: Any FFmpeg-supported format → YUV420P (required by ToxAV)
+* Audio: Any FFmpeg-supported format → 48kHz PCM, 1-2 channels (required by Opus encoder)
+* Scaling: Automatic bounding box calculation to Full HD (1920x1080) maximum
+
 
 <br>
 Any use of this project's code by GitHub Copilot, past or present, is done
