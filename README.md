@@ -22,6 +22,22 @@ The application functions as both a media player and a broadcaster, processing m
 * Scaling: Automatic bounding box calculation to Full HD (1920x1080) maximum
 
 
+### Keyboard Commands
+
+| Key | Function | Description |
+|-----|----------|-------------|
+| `Space` | Play/Pause | Toggle between playing and paused states  |
+| `f` | Seek Forward | Jump forward in media by `seek_delta_ms` |
+| `g` | Fast Forward | Jump forward by `seek_delta_ms_faster` (longer seek) |
+| `b` | Seek Backward | Jump backward in media by `seek_delta_ms` |
+| `a` | Audio Delay | Increase audio delay in 60ms increments (cycles 0-12) |
+| `v` | Video Delay | Increase video delay in 50ms increments (cycles 0-10) |
+| `c` | Call | Initiate a call to friend 0 |
+| `h` | Hang Up | End the current call |
+| `o` | OSD Toggle | Toggle on-screen display on/off  |
+| `i` | HDMI Frequency | Cycle through HDMI frequencies: 60→24→25→30→50→60 Hz |
+
+
 <br>
 Any use of this project's code by GitHub Copilot, past or present, is done
 without our permission.  We do not consent to GitHub's use of this project's
