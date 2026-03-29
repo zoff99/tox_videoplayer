@@ -7,6 +7,15 @@ The application functions as both a media player and a broadcaster, processing m
 [![Liberapay](https://img.shields.io/liberapay/goal/zoff.svg?logo=liberapay)](https://liberapay.com/zoff/donate)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/zoff99/tox_videoplayer)
 
+### Key characteristics:
+
+* Decentralized: Uses Tox DHT for peer discovery, no central servers required
+* Encrypted: All media transmission is end-to-end encrypted via the Tox protocol
+* Multi-source: Supports local video files (MP4, MKV, etc.), HTTP/HTTPS streams, and X11 desktop capture
+* Real-time: Multi-threaded architecture for concurrent video/audio processing and network transmission
+* Lightweight: Terminal-based interface with minimal dependencies
+
+
 <br>
 Any use of this project's code by GitHub Copilot, past or present, is done
 without our permission.  We do not consent to GitHub's use of this project's
